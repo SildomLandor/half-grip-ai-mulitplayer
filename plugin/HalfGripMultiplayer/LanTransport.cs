@@ -80,27 +80,37 @@ internal sealed class LanTransport : INetTransport
 
 	public void Broadcast(byte[] data, bool reliable)
 	{
-		_ = reliable;
 		if (_udp == null) return;
+		int copies = reliable ? 3 : 1;
 		if (IsHost)
 		{
 			foreach (var kv in _peers)
-				SendRaw(kv.Value, data);
+			{
+				for (int i = 0; i < copies; i++)
+					SendRaw(kv.Value, data);
+			}
 		}
 		else if (_hostEp != null)
 		{
-			SendRaw(_hostEp, data);
+			for (int i = 0; i < copies; i++)
+				SendRaw(_hostEp, data);
 		}
 	}
 
 	public void SendTo(ulong peerId, byte[] data, bool reliable)
 	{
-		_ = reliable;
 		if (_udp == null) return;
+		int copies = reliable ? 3 : 1;
 		if (_peers.TryGetValue(peerId, out var ep))
-			SendRaw(ep, data);
+		{
+			for (int i = 0; i < copies; i++)
+				SendRaw(ep, data);
+		}
 		else if (!IsHost && _hostEp != null)
-			SendRaw(_hostEp, data);
+		{
+			for (int i = 0; i < copies; i++)
+				SendRaw(_hostEp, data);
+		}
 	}
 
 	public void Disconnect()

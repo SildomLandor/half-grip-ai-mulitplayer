@@ -201,6 +201,7 @@ internal sealed class MpSession
 		BroadcastSlotMap();
 		WorldSync.ForceBroadcastLoadout(this);
 		WorldSync.BroadcastMapSelect(this);
+		WorldSync.BroadcastRunSnap(this);
 		Plugin.Log.LogInfo("RaceSetup broadcast");
 	}
 
@@ -578,6 +579,24 @@ internal sealed class MpSession
 					if (!IsHost)
 						WorldSync.ApplyBossKill();
 					break;
+				case MsgType.RunSnap:
+				{
+					var json = NetProtocol.ReadString(r);
+					if (!IsHost)
+						WorldSync.ApplyRunSnap(json);
+					break;
+				}
+				case MsgType.DentFx:
+				{
+					var mode = r.ReadByte();
+					var id = r.ReadUInt64();
+					var point = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var normal = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var strength = r.ReadSingle();
+					var kind = r.ReadByte();
+					WorldSync.ApplyDentFx(mode, id, point, normal, strength, kind);
+					break;
+				}
 				default:
 					break;
 			}

@@ -212,3 +212,8 @@ No Harmony / plugin Fatal / Exception lines. Benign BepInEx Unity log writer err
 ## 0.6.0 — full world sync (2026-10-26)
 
 Protocol v6. Synced: hazards seed, objective/boss/music/ceasefire in RaceSetup, RaceEnd, Loadout visuals, GunFx tracers, MapSelect/reroll, Shop money/offer, LapState, AmmoFx, NitroFx, ResetFx, BossKill, late-join bundle.
+
+## 0.7.0 — per-player economy + AI/run (2026-10-26)
+
+- Money/inventory/loadout stay local; ShopState no longer overwrites wallets; RaceEnd banks local payout.
+- RunSnap shares run graph only. AI gun hit peers + FX; bot HP/death via BotPose; DentFx; LAN reliable x3; leaderboard register ghosts.

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -32,11 +33,13 @@ internal enum MsgType : byte
 	NitroFx = 23,
 	ResetFx = 24,
 	BossKill = 25,
+	RunSnap = 26,
+	DentFx = 27,
 }
 
 internal static class NetProtocol
 {
-	public const byte Version = 6;
+	public const byte Version = 7;
 	public const int DefaultLanPort = 27777;
 	public const int SteamChannel = 0;
 
@@ -327,6 +330,30 @@ internal static class NetProtocol
 	}
 
 	public static byte[] BossKill() => new[] { (byte)MsgType.BossKill };
+
+	/// <summary>Shared run map graph only — not money/inventory.</summary>
+	public static byte[] RunSnap(string json)
+	{
+		using var ms = new MemoryStream(Math.Max(256, (json?.Length ?? 0) + 8));
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.RunSnap);
+		WriteString(w, json ?? "");
+		return ms.ToArray();
+	}
+
+	public static byte[] DentFx(byte botOrPeer, ulong id, Vector3 point, Vector3 normal, float strength, byte kind)
+	{
+		using var ms = new MemoryStream(40);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.DentFx);
+		w.Write(botOrPeer); // 0=peer ghost, 1=bot index as id low byte
+		w.Write(id);
+		w.Write(point.x); w.Write(point.y); w.Write(point.z);
+		w.Write(normal.x); w.Write(normal.y); w.Write(normal.z);
+		w.Write(strength);
+		w.Write(kind);
+		return ms.ToArray();
+	}
 
 	private static void WriteColor(BinaryWriter w, Color c)
 	{

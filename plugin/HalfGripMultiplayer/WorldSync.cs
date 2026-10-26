@@ -147,10 +147,21 @@ internal static class WorldSync
 		SuppressLocalRaceEndBroadcast = true;
 		try
 		{
+			// Per-player economy: each client banks THEIR own race result — never host money.
+			try
+			{
+				if (!RaceTracker.Ended)
+					RaceTracker.Finish();
+				ShopManager.addRaceGain(RaceTracker.Last);
+			}
+			catch (Exception ex)
+			{
+				Plugin.Log.LogWarning($"Local race payout: {ex.Message}");
+			}
+
 			GameManager.raceOver = true;
-			BossRace.Reset();
-			MpRuntime.Instance?.Session.AddChat($"* Host ended race (place={place})");
-			Plugin.Log.LogInfo($"RaceEnd apply place={place} wrecked={wrecked}");
+			MpRuntime.Instance?.Session.AddChat($"* Race over (host signal) — local payout kept");
+			Plugin.Log.LogInfo($"RaceEnd apply hostPlace={place} localBanked wrecked={wrecked}");
 			try
 			{
 				if (SceneLoader.Instance != null)
@@ -211,28 +222,117 @@ internal static class WorldSync
 		}
 	}
 
-	public static void PulseShop(MpSession session)
+	/// <summary>
+	/// Money and inventory stay per-player. Optionally share the shop panel catalog string only
+	/// so both see the same offer cards — never overwrite wallets.
+	/// </summary>
+	public static void PulseShopOfferCatalog(MpSession session)
 	{
 		if (session == null || !session.Linked || !session.IsHost) return;
 		if (Time.unscaledTime < _lastShopPulse) return;
-		_lastShopPulse = Time.unscaledTime + 2f;
+		_lastShopPulse = Time.unscaledTime + 3f;
 		string offer = "";
 		try { offer = SaveData.GetString("shop.offer") ?? ""; } catch { /* */ }
-		session.Broadcast(NetProtocol.ShopState(ShopManager.totalMoney, offer), true);
+		// money field unused by guests (sentinel -1)
+		session.Broadcast(NetProtocol.ShopState(-1f, offer), true);
 	}
 
 	public static void ApplyShopState(float money, string offerKey)
 	{
+		_ = money; // never apply host wallet
 		try
 		{
-			ShopManager.totalMoney = money;
 			if (!string.IsNullOrEmpty(offerKey))
 				SaveData.SetString("shop.offer", offerKey);
 		}
 		catch (Exception ex)
 		{
-			Plugin.Log.LogWarning($"ShopState apply: {ex.Message}");
+			Plugin.Log.LogWarning($"Shop offer catalog apply: {ex.Message}");
 		}
+	}
+
+	public static void BroadcastRunSnap(MpSession session)
+	{
+		if (session == null || !session.Linked || !session.IsHost) return;
+		if (!RunState.Active) return;
+		try
+		{
+			var save = RunSave.Capture(
+				RunState.Map,
+				RunState.Lives,
+				RunState.Races,
+				RunState.CurrentIndex,
+				RunState.HasSelection ? RunState.SelectedIndex : -1,
+				RunState.PendingObjective,
+				RunState.Outcome);
+			var json = UnityEngine.JsonUtility.ToJson(save);
+			session.Broadcast(NetProtocol.RunSnap(json), true);
+			Plugin.Log.LogInfo($"RunSnap broadcast ({json.Length} chars) — graph only, no wallets");
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"RunSnap capture: {ex.Message}");
+		}
+	}
+
+	public static void ApplyRunSnap(string json)
+	{
+		if (string.IsNullOrWhiteSpace(json)) return;
+		try
+		{
+			// Rebuild shared map graph; does not touch ShopManager / inventory / loadout.
+			SaveData.SetString("run", json);
+			if (!RunState.Load())
+				Plugin.Log.LogWarning("RunSnap: RunState.Load failed");
+			else
+				Plugin.Log.LogInfo("RunSnap applied (run graph)");
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"RunSnap apply: {ex.Message}");
+		}
+	}
+
+	public static void ApplyDentFx(byte mode, ulong id, Vector3 point, Vector3 normal, float strength, byte kind)
+	{
+		try
+		{
+			CarDamageVisuals? vis = null;
+			if (mode == 0)
+			{
+				var ghost = MpRuntime.Instance?.GetGhost(id);
+				if (ghost?.BoundEnemy != null)
+					vis = ghost.BoundEnemy.GetComponent<CarDamageVisuals>()
+					      ?? CarDamageVisuals.Ensure(ghost.BoundEnemy.gameObject);
+			}
+			else
+			{
+				var tm = UnityEngine.Object.FindFirstObjectByType<TrackManager>();
+				if (tm != null && (int)id < tm.Enemies.Count)
+				{
+					var e = tm.Enemies[(int)id];
+					if (e != null)
+						vis = e.GetComponent<CarDamageVisuals>() ?? CarDamageVisuals.Ensure(e.gameObject);
+				}
+			}
+			if (vis == null) return;
+			DentFxPatches.ApplyRemote();
+			vis.ReportHit(point, normal, strength, (DamageMarkKind)kind);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"DentFx: {ex.Message}");
+		}
+	}
+
+	public static void TryRegisterGhostOnLeaderboard(GhostCar ghost)
+	{
+		if (ghost?.BoundEnemy == null) return;
+		var tm = UnityEngine.Object.FindFirstObjectByType<TrackManager>();
+		var lm = tm?.lapManager;
+		if (lm == null) return;
+		try { lm.RegisterCar(ghost.BoundEnemy.gameObject); }
+		catch { /* already registered */ }
 	}
 
 	public static void BroadcastLocalLap(MpSession session)
@@ -322,13 +422,14 @@ internal static class WorldSync
 				RaceSync.MusicName, RaceSync.CeasefireSeconds, RaceSync.SelectedNodeIndex), true);
 		}
 		BroadcastMapSelect(session);
+		BroadcastRunSnap(session);
 		try
 		{
 			string offer = SaveData.GetString("shop.offer") ?? "";
-			session.SendTo(peerId, NetProtocol.ShopState(ShopManager.totalMoney, offer), true);
+			session.SendTo(peerId, NetProtocol.ShopState(-1f, offer), true);
 		}
 		catch { /* */ }
-		ForceBroadcastLoadout(session);
+		ForceBroadcastLoadout(session); // peer visuals only — never applies to local inventory
 		MpRuntime.Instance?.BroadcastLocalCarLook(force: true);
 		if (session.RaceStartReceived)
 			session.SendTo(peerId, NetProtocol.RaceStart(Time.unscaledTime), true);

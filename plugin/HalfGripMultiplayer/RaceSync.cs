@@ -294,10 +294,12 @@ internal static class RaceSync
 		}
 	}
 
+	private static readonly FieldInfo? EnemyHealthField =
+		AccessTools.Field(typeof(EnemyController), "health");
+
 	public static void ApplyBotPose(TrackManager tm, byte index, Vector3 pos, Quaternion rot, float speed, float hp)
 	{
 		_ = speed;
-		_ = hp;
 		if (tm == null) return;
 		var enemies = tm.Enemies;
 		if (index >= enemies.Count) return;
@@ -316,6 +318,15 @@ internal static class RaceSync
 		}
 		else
 			e.transform.SetPositionAndRotation(pos, rot);
+
+		// Host HP → guest: kill or mirror health without granting local kill credit.
+		if (!e.alive) return;
+		if (hp <= 0f)
+		{
+			e.TakeDamage(9999f, byPlayer: false);
+			return;
+		}
+		EnemyHealthField?.SetValue(e, hp);
 	}
 
 	public static List<(byte index, Vector3 pos, Quaternion rot, float speed, float hp)> CollectHostBotPoses(TrackManager tm)

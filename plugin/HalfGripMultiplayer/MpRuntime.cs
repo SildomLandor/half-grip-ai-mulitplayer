@@ -150,7 +150,7 @@ internal sealed class MpRuntime : MonoBehaviour
 		SendBotPoses();
 		SendLocalCarLook();
 		WorldSync.BroadcastLocalLoadoutIfChanged(Session);
-		WorldSync.PulseShop(Session);
+		WorldSync.PulseShopOfferCatalog(Session);
 		if (Time.frameCount % 20 == 0)
 			WorldSync.BroadcastLocalLap(Session);
 		foreach (var g in _ghosts.Values) g?.Tick(Time.deltaTime);

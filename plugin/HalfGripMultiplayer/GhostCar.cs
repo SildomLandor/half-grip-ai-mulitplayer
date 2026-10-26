@@ -158,6 +158,7 @@ internal sealed class GhostCar
 			ApplyLook(pending);
 		if (WorldSync.TryGetLoadout(peerId, out var loadout))
 			WorldSync.AttachLoadoutVisuals(peerId, enemy.transform, loadout);
+		WorldSync.TryRegisterGhostOnLeaderboard(this);
 		return true;
 	}
 

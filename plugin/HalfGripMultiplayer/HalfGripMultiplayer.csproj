@@ -53,6 +53,10 @@
       <HintPath>$(HalfGripManaged)\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>$(HalfGripManaged)\UnityEngine.JSONSerializeModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="Assembly-CSharp">
       <HintPath>$(HalfGripManaged)\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>

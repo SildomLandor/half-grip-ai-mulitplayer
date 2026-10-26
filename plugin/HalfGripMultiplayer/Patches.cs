@@ -488,7 +488,7 @@ internal static class BossKillSyncPatches
 	}
 }
 
-/// <summary>Loadout equipped in menu → push ids.</summary>
+/// <summary>Loadout equipped in menu → push ids for REMOTE VISUALS only (local inventory stays yours).</summary>
 [HarmonyPatch(typeof(PlayerLoadout), nameof(PlayerLoadout.Set))]
 internal static class LoadoutSetSyncPatches
 {
@@ -498,5 +498,107 @@ internal static class LoadoutSetSyncPatches
 		var rt = MpRuntime.Instance;
 		if (rt == null || !rt.Session.Linked) return;
 		WorldSync.ForceBroadcastLoadout(rt.Session);
+	}
+}
+
+/// <summary>AI hits a remote ghost hitbox → networked damage to that peer.</summary>
+[HarmonyPatch(typeof(EnemyGun), "HandleHit")]
+internal static class EnemyGunHitPeerPatches
+{
+	[HarmonyPrefix]
+	private static bool Prefix(EnemyGun __instance, RaycastHit hit, Ray shotRay)
+	{
+		_ = shotRay;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return true;
+		var box = hit.collider.GetComponentInParent<RemotePlayerHitbox>();
+		if (box == null) return true;
+		float dmg = __instance != null ? __instance.damage : 25f;
+		rt.DealDamageToPeer(box.PeerId, dmg, hit.point);
+		return false; // don't also TakeDamage the invincible ghost body
+	}
+}
+
+/// <summary>Host AI muzzle tracers for guests.</summary>
+[HarmonyPatch(typeof(EnemyGun), "FireEffects")]
+internal static class EnemyGunFxPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(EnemyGun __instance, Vector3 origin, Vector3 landedPoint)
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked || !rt.Session.IsHost) return;
+		if (__instance == null) return;
+		// Skip guns on peer-claimed slots (those are remotes, not AI).
+		if (__instance.GetComponentInParent<RemotePlayerHitbox>() != null) return;
+		rt.Session.Broadcast(NetProtocol.GunFx(origin, landedPoint), false);
+	}
+}
+
+/// <summary>Dent / impact marks on peer cars and bots.</summary>
+[HarmonyPatch(typeof(CarDamageVisuals), nameof(CarDamageVisuals.ReportHit))]
+internal static class DentFxPatches
+{
+	private static bool _remote;
+
+	internal static void ApplyRemote()
+	{
+		_remote = true;
+	}
+
+	[HarmonyPostfix]
+	private static void Postfix(CarDamageVisuals __instance, Vector3 worldPoint, Vector3 worldNormal, float strength, DamageMarkKind kind)
+	{
+		if (_remote)
+		{
+			_remote = false;
+			return;
+		}
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		if (__instance == null) return;
+
+		var box = __instance.GetComponentInParent<RemotePlayerHitbox>();
+		if (box != null)
+		{
+			rt.Session.Broadcast(NetProtocol.DentFx(0, box.PeerId, worldPoint, worldNormal, strength, (byte)kind), false);
+			return;
+		}
+		if (!rt.Session.IsHost) return;
+		var enemy = __instance.GetComponentInParent<EnemyController>();
+		if (enemy == null || enemy.GetComponent<RemotePlayerHitbox>() != null) return;
+		var tm = UnityEngine.Object.FindFirstObjectByType<TrackManager>();
+		if (tm == null) return;
+		int idx = -1;
+		for (int i = 0; i < tm.Enemies.Count; i++)
+			if (tm.Enemies[i] == enemy) { idx = i; break; }
+		if (idx < 0) return;
+		rt.Session.Broadcast(NetProtocol.DentFx(1, (ulong)idx, worldPoint, worldNormal, strength, (byte)kind), false);
+	}
+}
+
+/// <summary>After host advances the run, push map graph (not wallets).</summary>
+[HarmonyPatch(typeof(RunState), nameof(RunState.FinishRace))]
+internal static class RunFinishSnapPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix()
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked || !rt.Session.IsHost) return;
+		WorldSync.BroadcastRunSnap(rt.Session);
+		WorldSync.BroadcastMapSelect(rt.Session);
+	}
+}
+
+[HarmonyPatch(typeof(RunState), nameof(RunState.StartRun))]
+internal static class RunStartSnapPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix()
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked || !rt.Session.IsHost) return;
+		WorldSync.BroadcastRunSnap(rt.Session);
 	}
 }
