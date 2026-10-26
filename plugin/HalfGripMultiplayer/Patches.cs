@@ -347,3 +347,156 @@ internal static class SceneLoaderEffectsPatches
 		rt.Session.BroadcastHostScene(sceneName);
 	}
 }
+
+/// <summary>Shared RNG for chickens/traps so both clients get the same hazard layout.</summary>
+[HarmonyPatch(typeof(hazardsSpawner), "Start")]
+internal static class HazardsSeedPatches
+{
+	[HarmonyPrefix]
+	private static void Prefix()
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		RaceSync.InitHazardSeedIfNeeded();
+	}
+}
+
+/// <summary>Host finishes → everyone ends together.</summary>
+[HarmonyPatch(typeof(GameManager), nameof(GameManager.RaceFinished))]
+internal static class RaceFinishedSyncPatches
+{
+	[HarmonyPrefix]
+	private static void Prefix(int position)
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		if (!rt.Session.IsHost || WorldSync.SuppressLocalRaceEndBroadcast) return;
+		var last = RaceTracker.Last;
+		WorldSync.BroadcastRaceEnd(rt.Session, position, last.survived, last.objectiveMet, !last.survived, RaceTracker.Quit);
+	}
+}
+
+/// <summary>Gun muzzle/tracer FX for remotes.</summary>
+[HarmonyPatch(typeof(Gun), "FireEffects")]
+internal static class GunFireFxPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(Gun __instance, Vector3 targetPoint)
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		if (__instance == null) return;
+		var cc = __instance.carLink != null ? __instance.carLink.cc : null;
+		if (cc == null || !cc.isPlayer) return;
+		var origin = __instance.firePoint != null ? __instance.firePoint.position : cc.transform.position;
+		rt.Session.Broadcast(NetProtocol.GunFx(origin, targetPoint), false);
+	}
+}
+
+/// <summary>Map node selection on the run graph.</summary>
+[HarmonyPatch(typeof(RunState), nameof(RunState.Select))]
+internal static class RunSelectSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(int index)
+	{
+		_ = index;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked || !rt.Session.IsHost) return;
+		WorldSync.BroadcastMapSelect(rt.Session);
+	}
+}
+
+[HarmonyPatch(typeof(RunState), nameof(RunState.RerollSelectedMap))]
+internal static class RunRerollSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(bool __result)
+	{
+		if (!__result) return;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked || !rt.Session.IsHost) return;
+		WorldSync.BroadcastMapSelect(rt.Session);
+		// Map/weather may change — push a lightweight RaceSetup when already mid-lobby.
+		if (rt.Session.InLobbyPhase)
+			rt.Session.BroadcastRaceSetup();
+	}
+}
+
+/// <summary>Ammo pickup removes the box on peers.</summary>
+[HarmonyPatch(typeof(AmmoDrop), "Collect")]
+internal static class AmmoPickupSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(AmmoDrop __instance, CarControllerNew car, bool __result)
+	{
+		if (!__result || __instance == null || car == null || !car.isPlayer) return;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		rt.Session.Broadcast(NetProtocol.AmmoFx(__instance.transform.position, __instance.magazines), true);
+	}
+}
+
+/// <summary>Nitro flames on remote ghosts.</summary>
+[HarmonyPatch]
+internal static class NitroFxPatches
+{
+	private static System.Reflection.MethodBase TargetMethod() =>
+		AccessTools.Method(typeof(Signals), nameof(Signals.Emit)).MakeGenericMethod(typeof(NitroFired));
+
+	[HarmonyPostfix]
+	private static void Postfix(NitroFired signal)
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		rt.Session.Broadcast(NetProtocol.NitroFx(true, signal.power), false);
+	}
+}
+
+/// <summary>Hold-R reset pose snap for remotes.</summary>
+[HarmonyPatch(typeof(PlayerResetLogic), nameof(PlayerResetLogic.ResetOnTrack))]
+internal static class ResetFxPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(PlayerResetLogic __instance)
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		var car = MpRuntimeFindCar();
+		if (car == null) return;
+		rt.Session.Broadcast(NetProtocol.ResetFx(car.transform.position, car.transform.rotation), true);
+	}
+
+	private static CarControllerNew? MpRuntimeFindCar()
+	{
+		foreach (var c in UnityEngine.Object.FindObjectsByType<CarControllerNew>(FindObjectsSortMode.None))
+			if (c != null && c.isPlayer && c.isActiveAndEnabled) return c;
+		return UnityEngine.Object.FindFirstObjectByType<TrackManager>()?.playerCarController;
+	}
+}
+
+/// <summary>Boss destroyed flag.</summary>
+[HarmonyPatch(typeof(BossRace), nameof(BossRace.ReportDestroyed))]
+internal static class BossKillSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix()
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked || !rt.Session.IsHost) return;
+		rt.Session.Broadcast(NetProtocol.BossKill(), true);
+	}
+}
+
+/// <summary>Loadout equipped in menu → push ids.</summary>
+[HarmonyPatch(typeof(PlayerLoadout), nameof(PlayerLoadout.Set))]
+internal static class LoadoutSetSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix()
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		WorldSync.ForceBroadcastLoadout(rt.Session);
+	}
+}

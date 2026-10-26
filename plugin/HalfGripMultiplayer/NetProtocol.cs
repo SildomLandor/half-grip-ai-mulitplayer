@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using UnityEngine;
@@ -21,13 +22,22 @@ internal enum MsgType : byte
 	SlotMap = 13,
 	BotPose = 14,
 	CarLook = 15,
+	RaceEnd = 16,
+	Loadout = 17,
+	GunFx = 18,
+	MapSelect = 19,
+	ShopState = 20,
+	LapState = 21,
+	AmmoFx = 22,
+	NitroFx = 23,
+	ResetFx = 24,
+	BossKill = 25,
 }
 
 internal static class NetProtocol
 {
-	public const byte Version = 5;
+	public const byte Version = 6;
 	public const int DefaultLanPort = 27777;
-	/// <summary>Facepunch SteamNetworking P2P channel for this mod.</summary>
 	public const int SteamChannel = 0;
 
 	public static byte[] Hello(string name, ulong selfId)
@@ -104,10 +114,7 @@ internal static class NetProtocol
 		return ms.ToArray();
 	}
 
-	public static byte[] Wreck()
-	{
-		return new[] { (byte)MsgType.Wreck };
-	}
+	public static byte[] Wreck() => new[] { (byte)MsgType.Wreck };
 
 	public static byte[] RaceStart(float hostTime)
 	{
@@ -118,10 +125,7 @@ internal static class NetProtocol
 		return ms.ToArray();
 	}
 
-	public static byte[] RaceAbort()
-	{
-		return new[] { (byte)MsgType.RaceAbort };
-	}
+	public static byte[] RaceAbort() => new[] { (byte)MsgType.RaceAbort };
 
 	public static byte[] LoadScene(string sceneName)
 	{
@@ -132,7 +136,6 @@ internal static class NetProtocol
 		return ms.ToArray();
 	}
 
-	/// <summary>Host race context: weather, short/laps, variant, spawn seed, scene.</summary>
 	public static byte[] RaceSetup(
 		int spawnSeed,
 		bool shortRace,
@@ -140,9 +143,15 @@ internal static class NetProtocol
 		int maxLaps,
 		string weatherName,
 		string mapName,
-		string sceneName)
+		string sceneName,
+		byte objectiveKind,
+		int objectiveAmount,
+		string objectiveTarget,
+		string musicName,
+		float ceasefireSeconds,
+		int selectedNodeIndex)
 	{
-		using var ms = new MemoryStream(256);
+		using var ms = new MemoryStream(384);
 		using var w = new BinaryWriter(ms);
 		w.Write((byte)MsgType.RaceSetup);
 		w.Write(spawnSeed);
@@ -152,11 +161,16 @@ internal static class NetProtocol
 		WriteString(w, weatherName ?? "");
 		WriteString(w, mapName ?? "");
 		WriteString(w, sceneName ?? "");
+		w.Write(objectiveKind);
+		w.Write(objectiveAmount);
+		WriteString(w, objectiveTarget ?? "");
+		WriteString(w, musicName ?? "");
+		w.Write(ceasefireSeconds);
+		w.Write(selectedNodeIndex);
 		return ms.ToArray();
 	}
 
-	/// <summary>peerId → grid slot (0 = PlayerPosition, 1+ = enemy grid seats).</summary>
-	public static byte[] SlotMap(System.Collections.Generic.IReadOnlyList<(ulong peerId, byte slot)> entries)
+	public static byte[] SlotMap(IReadOnlyList<(ulong peerId, byte slot)> entries)
 	{
 		using var ms = new MemoryStream(128);
 		using var w = new BinaryWriter(ms);
@@ -170,7 +184,7 @@ internal static class NetProtocol
 		return ms.ToArray();
 	}
 
-	public static byte[] BotPose(System.Collections.Generic.IReadOnlyList<(byte index, Vector3 pos, Quaternion rot, float speed, float hp)> bots)
+	public static byte[] BotPose(IReadOnlyList<(byte index, Vector3 pos, Quaternion rot, float speed, float hp)> bots)
 	{
 		using var ms = new MemoryStream(32 + bots.Count * 40);
 		using var w = new BinaryWriter(ms);
@@ -203,18 +217,116 @@ internal static class NetProtocol
 		return ms.ToArray();
 	}
 
-	public static CarLookData ReadCarLook(BinaryReader r)
+	public static CarLookData ReadCarLook(BinaryReader r) => new()
 	{
-		return new CarLookData
-		{
-			SkinIndex = r.ReadByte(),
-			Color1 = ReadColor(r),
-			Color2 = ReadColor(r),
-			Color3 = ReadColor(r),
-			AssetName = ReadString(r),
-			ChassisName = ReadString(r),
-		};
+		SkinIndex = r.ReadByte(),
+		Color1 = ReadColor(r),
+		Color2 = ReadColor(r),
+		Color3 = ReadColor(r),
+		AssetName = ReadString(r),
+		ChassisName = ReadString(r),
+	};
+
+	public static byte[] RaceEnd(int place, bool survived, bool objectiveMet, bool wrecked, bool quit)
+	{
+		using var ms = new MemoryStream(16);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.RaceEnd);
+		w.Write(place);
+		w.Write((byte)(survived ? 1 : 0));
+		w.Write((byte)(objectiveMet ? 1 : 0));
+		w.Write((byte)(wrecked ? 1 : 0));
+		w.Write((byte)(quit ? 1 : 0));
+		return ms.ToArray();
 	}
+
+	public static byte[] Loadout(IReadOnlyList<string> upgradeIds)
+	{
+		using var ms = new MemoryStream(256);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.Loadout);
+		w.Write((byte)Mathf.Min(upgradeIds.Count, 255));
+		int n = Mathf.Min(upgradeIds.Count, 255);
+		for (int i = 0; i < n; i++)
+			WriteString(w, upgradeIds[i] ?? "");
+		return ms.ToArray();
+	}
+
+	public static byte[] GunFx(Vector3 origin, Vector3 target)
+	{
+		using var ms = new MemoryStream(28);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.GunFx);
+		w.Write(origin.x); w.Write(origin.y); w.Write(origin.z);
+		w.Write(target.x); w.Write(target.y); w.Write(target.z);
+		return ms.ToArray();
+	}
+
+	public static byte[] MapSelect(int selectedIndex, int currentIndex, int races, int lives)
+	{
+		using var ms = new MemoryStream(20);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.MapSelect);
+		w.Write(selectedIndex);
+		w.Write(currentIndex);
+		w.Write(races);
+		w.Write(lives);
+		return ms.ToArray();
+	}
+
+	public static byte[] ShopState(float money, string offerKey)
+	{
+		using var ms = new MemoryStream(64);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.ShopState);
+		w.Write(money);
+		WriteString(w, offerKey ?? "");
+		return ms.ToArray();
+	}
+
+	public static byte[] LapState(int lap, float progress, int place, bool finished)
+	{
+		using var ms = new MemoryStream(16);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.LapState);
+		w.Write(lap);
+		w.Write(progress);
+		w.Write(place);
+		w.Write((byte)(finished ? 1 : 0));
+		return ms.ToArray();
+	}
+
+	public static byte[] AmmoFx(Vector3 pos, int magazines)
+	{
+		using var ms = new MemoryStream(20);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.AmmoFx);
+		w.Write(pos.x); w.Write(pos.y); w.Write(pos.z);
+		w.Write(magazines);
+		return ms.ToArray();
+	}
+
+	public static byte[] NitroFx(bool on, float power)
+	{
+		using var ms = new MemoryStream(8);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.NitroFx);
+		w.Write((byte)(on ? 1 : 0));
+		w.Write(power);
+		return ms.ToArray();
+	}
+
+	public static byte[] ResetFx(Vector3 pos, Quaternion rot)
+	{
+		using var ms = new MemoryStream(32);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.ResetFx);
+		w.Write(pos.x); w.Write(pos.y); w.Write(pos.z);
+		w.Write(rot.x); w.Write(rot.y); w.Write(rot.z); w.Write(rot.w);
+		return ms.ToArray();
+	}
+
+	public static byte[] BossKill() => new[] { (byte)MsgType.BossKill };
 
 	private static void WriteColor(BinaryWriter w, Color c)
 	{
@@ -234,7 +346,6 @@ internal static class NetProtocol
 	public static string ReadString(BinaryReader r)
 	{
 		var len = r.ReadUInt16();
-		var bytes = r.ReadBytes(len);
-		return Encoding.UTF8.GetString(bytes);
+		return Encoding.UTF8.GetString(r.ReadBytes(len));
 	}
 }

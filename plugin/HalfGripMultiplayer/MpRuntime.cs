@@ -31,6 +31,15 @@ internal sealed class MpRuntime : MonoBehaviour
 
 	internal IEnumerable<GhostCar> AllGhosts() => _ghosts.Values;
 
+	internal GhostCar? GetGhost(ulong peerId) =>
+		_ghosts.TryGetValue(peerId, out var g) ? g : null;
+
+	internal void ApplyPeerLoadoutVisual(ulong peer, List<string> ids)
+	{
+		if (!_ghosts.TryGetValue(peer, out var ghost) || ghost?.BoundEnemy == null) return;
+		WorldSync.AttachLoadoutVisuals(peer, ghost.BoundEnemy.transform, ids);
+	}
+
 	private void Awake()
 	{
 		Instance = this;
@@ -90,6 +99,7 @@ internal sealed class MpRuntime : MonoBehaviour
 		if (!Session.IsHost)
 			RaceSync.FreezeGuestBots(tm);
 		BroadcastLocalCarLook(force: true);
+		WorldSync.ForceBroadcastLoadout(Session);
 		Plugin.Log.LogInfo($"Track ready: localSlot={Session.LocalSlot} peers={Session.Peers.Count}");
 	}
 
@@ -139,6 +149,10 @@ internal sealed class MpRuntime : MonoBehaviour
 		SendLocalPose();
 		SendBotPoses();
 		SendLocalCarLook();
+		WorldSync.BroadcastLocalLoadoutIfChanged(Session);
+		WorldSync.PulseShop(Session);
+		if (Time.frameCount % 20 == 0)
+			WorldSync.BroadcastLocalLap(Session);
 		foreach (var g in _ghosts.Values) g?.Tick(Time.deltaTime);
 	}
 

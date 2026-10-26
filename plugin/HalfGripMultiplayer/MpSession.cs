@@ -191,8 +191,16 @@ internal sealed class MpSession
 			RaceSync.MaxLaps,
 			RaceSync.WeatherName,
 			RaceSync.MapName,
-			scene ?? ""), true);
+			scene ?? "",
+			RaceSync.ObjectiveKindByte,
+			RaceSync.ObjectiveAmount,
+			RaceSync.ObjectiveTarget,
+			RaceSync.MusicName,
+			RaceSync.CeasefireSeconds,
+			RaceSync.SelectedNodeIndex), true);
 		BroadcastSlotMap();
+		WorldSync.ForceBroadcastLoadout(this);
+		WorldSync.BroadcastMapSelect(this);
 		Plugin.Log.LogInfo("RaceSetup broadcast");
 	}
 
@@ -333,11 +341,7 @@ internal sealed class MpSession
 							AssignGuestSlot(peerKey);
 							BroadcastSlotMap();
 							SendHostSceneTo(peerKey);
-							if (RaceSync.HasSetup)
-								SendTo(peerKey, NetProtocol.RaceSetup(
-									RaceSync.SpawnSeed, RaceSync.ShortRace, RaceSync.TrackVariantByte,
-									RaceSync.MaxLaps, RaceSync.WeatherName, RaceSync.MapName,
-									RaceSync.SceneName), true);
+							WorldSync.SendLateJoinBundle(this, peerKey);
 							if (RaceStartReceived)
 								SendTo(peerKey, NetProtocol.RaceStart(Time.unscaledTime), true);
 							else if (!InLobbyPhase)
@@ -446,7 +450,14 @@ internal sealed class MpSession
 					var weather = NetProtocol.ReadString(r);
 					var map = NetProtocol.ReadString(r);
 					var scene = NetProtocol.ReadString(r);
-					RaceSync.ApplyPacket(seed, shortRace, variant, laps, weather, map, scene);
+					var objKind = r.ReadByte();
+					var objAmount = r.ReadInt32();
+					var objTarget = NetProtocol.ReadString(r);
+					var music = NetProtocol.ReadString(r);
+					var cease = r.ReadSingle();
+					var selected = r.ReadInt32();
+					RaceSync.ApplyPacket(seed, shortRace, variant, laps, weather, map, scene,
+						objKind, objAmount, objTarget, music, cease, selected);
 					AddChat($"* Race setup: {map} / {weather} / laps={laps}");
 					break;
 				}
@@ -488,6 +499,85 @@ internal sealed class MpSession
 					MpRuntime.Instance?.ApplyRemoteCarLook(pkt.PeerId, look);
 					break;
 				}
+				case MsgType.RaceEnd:
+				{
+					var place = r.ReadInt32();
+					var survived = r.ReadByte() != 0;
+					var objectiveMet = r.ReadByte() != 0;
+					var wrecked = r.ReadByte() != 0;
+					var quit = r.ReadByte() != 0;
+					if (!IsHost)
+						WorldSync.ApplyRemoteRaceEnd(place, survived, objectiveMet, wrecked, quit);
+					break;
+				}
+				case MsgType.Loadout:
+				{
+					int n = r.ReadByte();
+					var ids = new List<string>(n);
+					for (int i = 0; i < n; i++)
+						ids.Add(NetProtocol.ReadString(r));
+					WorldSync.StorePeerLoadout(pkt.PeerId, ids);
+					break;
+				}
+				case MsgType.GunFx:
+				{
+					var origin = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var target = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.SpawnGunTracer(origin, target);
+					break;
+				}
+				case MsgType.MapSelect:
+				{
+					var selected = r.ReadInt32();
+					var current = r.ReadInt32();
+					var races = r.ReadInt32();
+					var lives = r.ReadInt32();
+					if (!IsHost)
+						WorldSync.ApplyMapSelect(selected, current, races, lives);
+					break;
+				}
+				case MsgType.ShopState:
+				{
+					var money = r.ReadSingle();
+					var offer = NetProtocol.ReadString(r);
+					if (!IsHost)
+						WorldSync.ApplyShopState(money, offer);
+					break;
+				}
+				case MsgType.LapState:
+				{
+					var lap = r.ReadInt32();
+					var progress = r.ReadSingle();
+					var place = r.ReadInt32();
+					var finished = r.ReadByte() != 0;
+					WorldSync.StorePeerLap(pkt.PeerId, lap, progress, place, finished);
+					break;
+				}
+				case MsgType.AmmoFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var mags = r.ReadInt32();
+					WorldSync.ApplyAmmoFx(pos, mags);
+					break;
+				}
+				case MsgType.NitroFx:
+				{
+					var on = r.ReadByte() != 0;
+					var power = r.ReadSingle();
+					WorldSync.ApplyNitroFx(pkt.PeerId, on, power);
+					break;
+				}
+				case MsgType.ResetFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var rot = new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyResetFx(pkt.PeerId, pos, rot);
+					break;
+				}
+				case MsgType.BossKill:
+					if (!IsHost)
+						WorldSync.ApplyBossKill();
+					break;
 				default:
 					break;
 			}

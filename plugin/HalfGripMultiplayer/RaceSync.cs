@@ -31,10 +31,22 @@ internal static class RaceSync
 	public static string WeatherName { get; private set; } = "";
 	public static string MapName { get; private set; } = "";
 	public static string SceneName { get; private set; } = "";
+	public static byte ObjectiveKindByte { get; private set; }
+	public static int ObjectiveAmount { get; private set; }
+	public static string ObjectiveTarget { get; private set; } = "";
+	public static string MusicName { get; private set; } = "";
+	public static float CeasefireSeconds { get; private set; } = 10f;
+	public static int SelectedNodeIndex { get; private set; } = -1;
 	public static bool HasSetup { get; private set; }
 
 	/// <summary>True for the next TrackManager.SpawnEnemies — forces shared UnityEngine.Random seed.</summary>
 	public static bool SeedNextSpawn { get; set; }
+	public static bool SeedNextHazards { get; set; }
+
+	private static readonly PropertyInfo? PendingObjectiveProp =
+		AccessTools.Property(typeof(RunState), nameof(RunState.PendingObjective));
+	private static readonly PropertyInfo? SelectedIndexProp =
+		AccessTools.Property(typeof(RunState), nameof(RunState.SelectedIndex));
 
 	public static void CaptureFromHost()
 	{
@@ -56,16 +68,29 @@ internal static class RaceSync
 		if (string.IsNullOrEmpty(MapName) && RunState.HasSelection && RunState.Selected?.map != null)
 			MapName = RunState.Selected.map.name;
 		SceneName = SceneManager.GetActiveScene().name;
+
+		var obj = RunState.PendingObjective;
+		ObjectiveKindByte = (byte)obj.kind;
+		ObjectiveAmount = obj.amount;
+		ObjectiveTarget = obj.target ?? "";
+		MusicName = RunState.ActiveMapMusic != null ? RunState.ActiveMapMusic.name : "";
+		CeasefireSeconds = AmmoLockSwitch.CeasefireSeconds;
+		SelectedNodeIndex = RunState.HasSelection ? RunState.SelectedIndex : -1;
+
 		SpawnSeed = unchecked(Environment.TickCount ^ (int)(DateTime.UtcNow.Ticks & 0x7fffffff));
 		if (SpawnSeed == 0) SpawnSeed = 1337;
 		HasSetup = true;
 		SeedNextSpawn = true;
+		SeedNextHazards = true;
 		Plugin.Log.LogInfo(
-			$"RaceSetup capture: weather={WeatherName} short={ShortRace} variant={TrackVariantByte} laps={MaxLaps} seed={SpawnSeed}");
+			$"RaceSetup capture: weather={WeatherName} short={ShortRace} variant={TrackVariantByte} laps={MaxLaps} seed={SpawnSeed} obj={obj.kind}");
 	}
 
-	public static void ApplyPacket(int spawnSeed, bool shortRace, byte variant, int maxLaps,
-		string weatherName, string mapName, string sceneName)
+	public static void ApplyPacket(
+		int spawnSeed, bool shortRace, byte variant, int maxLaps,
+		string weatherName, string mapName, string sceneName,
+		byte objectiveKind, int objectiveAmount, string objectiveTarget,
+		string musicName, float ceasefireSeconds, int selectedNodeIndex)
 	{
 		SpawnSeed = spawnSeed == 0 ? 1337 : spawnSeed;
 		ShortRace = shortRace;
@@ -74,17 +99,45 @@ internal static class RaceSync
 		WeatherName = weatherName ?? "";
 		MapName = mapName ?? "";
 		SceneName = sceneName ?? "";
+		ObjectiveKindByte = objectiveKind;
+		ObjectiveAmount = objectiveAmount;
+		ObjectiveTarget = objectiveTarget ?? "";
+		MusicName = musicName ?? "";
+		CeasefireSeconds = ceasefireSeconds > 0f ? ceasefireSeconds : AmmoLockSwitch.CeasefireSeconds;
+		SelectedNodeIndex = selectedNodeIndex;
 		HasSetup = true;
 		SeedNextSpawn = true;
+		SeedNextHazards = true;
 		ApplyRunContext();
 		Plugin.Log.LogInfo(
-			$"RaceSetup apply: weather={WeatherName} short={ShortRace} variant={TrackVariantByte} laps={MaxLaps} seed={SpawnSeed}");
+			$"RaceSetup apply: weather={WeatherName} short={ShortRace} laps={MaxLaps} seed={SpawnSeed} obj={(ObjectiveKind)objectiveKind}");
 	}
 
 	public static void ApplyRunContext()
 	{
 		RaceLength.Set(ShortRace);
 		TrackVariants.Set((TrackVariant)TrackVariantByte);
+		AmmoLockSwitch.CeasefireSeconds = CeasefireSeconds;
+
+		var objective = new RaceObjective
+		{
+			kind = (ObjectiveKind)ObjectiveKindByte,
+			amount = ObjectiveAmount,
+			target = ObjectiveTarget,
+		};
+		PendingObjectiveProp?.SetValue(null, objective);
+
+		if (SelectedNodeIndex >= 0 && RunState.Active)
+		{
+			try
+			{
+				if (RunState.Choices.Contains(SelectedNodeIndex))
+					RunState.Select(SelectedNodeIndex);
+				else
+					SelectedIndexProp?.SetValue(null, SelectedNodeIndex);
+			}
+			catch { /* guest run graph may differ */ }
+		}
 
 		WeatherProfile? weather = FindWeather(WeatherName);
 		if (weather != null)
@@ -101,7 +154,24 @@ internal static class RaceSync
 			}
 			try
 			{
-				var music = map.PickMusic();
+				AudioClip? music = null;
+				if (!string.IsNullOrEmpty(MusicName))
+				{
+					music = Resources.Load<AudioClip>(MusicName);
+					if (music == null)
+					{
+						foreach (var clip in Resources.FindObjectsOfTypeAll<AudioClip>())
+						{
+							if (clip != null && string.Equals(clip.name, MusicName, StringComparison.OrdinalIgnoreCase))
+							{
+								music = clip;
+								break;
+							}
+						}
+					}
+				}
+				if (music == null)
+					music = map.PickMusic();
 				ActiveMapMusicProp?.SetValue(null, music);
 			}
 			catch { /* offline */ }
@@ -114,6 +184,14 @@ internal static class RaceSync
 			wc.ApplyProfile();
 			WeatherGrip.Current = RunState.ActiveWeather;
 		}
+	}
+
+	public static void InitHazardSeedIfNeeded()
+	{
+		if (!SeedNextHazards && !HasSetup) return;
+		UnityEngine.Random.InitState(SpawnSeed ^ 0x42A7D5);
+		SeedNextHazards = false;
+		Plugin.Log.LogInfo($"Hazard seed applied: {SpawnSeed ^ 0x42A7D5}");
 	}
 
 	public static void ApplyLapsToTrack(TrackManager tm)

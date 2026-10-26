@@ -101,6 +101,8 @@ internal sealed class GhostCar
 
 	public void Destroy()
 	{
+		if (Hitbox != null)
+			WorldSync.ClearGhostExtras(Hitbox.PeerId);
 		ReleaseEnemy();
 		if (Root != null) Object.Destroy(Root);
 	}
@@ -154,6 +156,8 @@ internal sealed class GhostCar
 			ApplyLook(PendingLook.Value);
 		else if (CarLookSync.TryGetPending(peerId, out var pending))
 			ApplyLook(pending);
+		if (WorldSync.TryGetLoadout(peerId, out var loadout))
+			WorldSync.AttachLoadoutVisuals(peerId, enemy.transform, loadout);
 		return true;
 	}
 

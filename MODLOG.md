@@ -208,3 +208,7 @@ No Harmony / plugin Fatal / Exception lines. Benign BepInEx Unity log writer err
 - Applied to remote ghost's claimed EnemyController CarSkinController via ApplySkin.
 - Sent on Hello, track ready, ApplySkin/Refit/PlayerCarSkin.Wear, and 1 Hz when dirty.
 - Protocol Version = 5.
+
+## 0.6.0 — full world sync (2026-10-26)
+
+Protocol v6. Synced: hazards seed, objective/boss/music/ceasefire in RaceSetup, RaceEnd, Loadout visuals, GunFx tracers, MapSelect/reroll, Shop money/offer, LapState, AmmoFx, NitroFx, ResetFx, BossKill, late-join bundle.
