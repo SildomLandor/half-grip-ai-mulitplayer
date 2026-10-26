@@ -137,6 +137,15 @@ internal static class CarLookSync
 
 	public static bool TryGetPending(ulong peerId, out CarLookData look) => Pending.TryGetValue(peerId, out look);
 
+	public static void RemapPeer(ulong fromId, ulong toId)
+	{
+		if (fromId == toId) return;
+		if (!Pending.TryGetValue(fromId, out var look)) return;
+		Pending.Remove(fromId);
+		if (!Pending.ContainsKey(toId))
+			Pending[toId] = look;
+	}
+
 	public static void ApplyToController(CarSkinController? csc, CarLookData look)
 	{
 		if (csc == null) return;

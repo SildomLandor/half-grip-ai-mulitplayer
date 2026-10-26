@@ -1,4 +1,4 @@
-﻿Drop these zips into the Half Grip Demo folder (next to HalfGrip.exe).
+﻿# Dist packages
 
-- HalfGripMultiplayer-0.9.0-game-root.zip — BepInEx + plugin (full install)
-- HalfGripMultiplayer-0.9.0-plugin-only.zip — plugin DLL only
+- HalfGripMultiplayer-0.10.28-game-root.zip — BepInEx + plugin (full install)
+- HalfGripMultiplayer-0.10.28-plugin-only.zip — plugin DLL only

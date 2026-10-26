@@ -1,4 +1,4 @@
-ï»¿# Half Grip Multiplayer â€” Wire Protocol (v7)
+# Half Grip Multiplayer — Wire Protocol (v7)
 
 Private Steam / LAN `:27777`. Host = lobby owner.
 
@@ -6,7 +6,7 @@ Private Steam / LAN `:27777`. Host = lobby owner.
 
 **Money, inventory, and equipped loadout are per-player.**  
 `ShopState` only shares the shop *offer catalog* string (money field = `-1`, ignored).  
-`Loadout` is for **remote visuals** on ghosts â€” never applied to the local `PlayerLoadout`.  
+`Loadout` is for **remote visuals** on ghosts — never applied to the local `PlayerLoadout`.  
 On `RaceEnd`, each client banks **their own** `RaceTracker` payout via `ShopManager.addRaceGain`.
 
 ## Messages (additions since v5)
@@ -16,8 +16,8 @@ On `RaceEnd`, each client banks **their own** `RaceTracker` payout via `ShopMana
 | 12 | RaceSetup | + objective, music, ceasefire, selected node |
 | 16 | RaceEnd | host signal; guests keep local payout |
 | 17 | Loadout | peer cosmetic ids |
-| 18â€“25 | Gun/Map/Shop/Lap/Ammo/Nitro/Reset/Boss | as before |
-| 26 | RunSnap | `RunSave` JSON â€” **map graph only** (not wallets) |
+| 18–25 | Gun/Map/Shop/Lap/Ammo/Nitro/Reset/Boss | as before |
+| 26 | RunSnap | `RunSave` JSON — **map graph only** (not wallets) |
 | 27 | DentFx | damage marks on peers/bots |
 
 Hello **version = 7**. LAN `reliable` sends are triplicated.

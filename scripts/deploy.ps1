@@ -21,3 +21,11 @@ Copy-Item -Force $pluginDll "$game\BepInEx\plugins\HalfGripMultiplayer\HalfGripM
 # Steam copy should not auto LAN
 Remove-Item -Force -ErrorAction SilentlyContinue "$game\BepInEx\plugins\HalfGripMultiplayer\hgmp.role"
 Write-Host "Deployed to Steam install."
+
+foreach ($client in @("ClientA", "ClientB")) {
+  $dst = Join-Path $root "clients\$client\BepInEx\plugins\HalfGripMultiplayer"
+  if (-not (Test-Path (Split-Path $dst -Parent))) { continue }
+  New-Item -ItemType Directory -Force -Path $dst | Out-Null
+  Copy-Item -Force $pluginDll "$dst\HalfGripMultiplayer.dll"
+  Write-Host "Deployed to $client."
+}

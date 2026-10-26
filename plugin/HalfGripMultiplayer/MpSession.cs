@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Text;
 using Steamworks;
 using UnityEngine;
 
@@ -35,6 +36,16 @@ internal sealed class MpSession
 	public string? HostSceneName { get; private set; }
 	/// <summary>Lobby/prep phase: Ready is manual confirmation, not auto race-start.</summary>
 	public bool InLobbyPhase { get; set; } = true;
+	private string? _lastBroadcastScene;
+	private float _lastBroadcastSceneAt = -999f;
+	private readonly Dictionary<uint, RunSnapAssembly> _runSnapParts = new();
+
+	private sealed class RunSnapAssembly
+	{
+		public int Count;
+		public byte[]?[] Parts = Array.Empty<byte[]?>();
+		public float ExpiresAt;
+	}
 
 	public struct PeerInfo
 	{
@@ -42,6 +53,8 @@ internal sealed class MpSession
 		public bool Ready;
 		public float LastSeen;
 		public float Hp;
+		public float RttMs;
+		public byte ProtoVer;
 	}
 
 	public void Pump()
@@ -55,6 +68,9 @@ internal sealed class MpSession
 		{
 			_nextPing = Time.unscaledTime + 2f;
 			Broadcast(NetProtocol.Ping(++_pingSeq, Time.unscaledTime), reliable: false);
+			// Keep identity alive on LAN (helps remap + late join Hello).
+			if (Time.frameCount % 240 == 0)
+				Broadcast(NetProtocol.Hello(LocalName(), LocalId), true);
 		}
 	}
 
@@ -143,6 +159,10 @@ internal sealed class MpSession
 
 	public void Leave()
 	{
+		if (Linked)
+		{
+			try { Broadcast(NetProtocol.PeerLeft(), true); } catch { /* */ }
+		}
 		Transport?.Disconnect();
 		Transport?.Dispose();
 		Transport = null;
@@ -155,10 +175,15 @@ internal sealed class MpSession
 		PeerSlots.Clear();
 		_pendingReady.Clear();
 		LocalReady = false;
+		ForceStartUnlocked = false;
 		RaceStartReceived = false;
 		LocalSlot = 0;
 		_nextGuestSlot = 1;
 		InLobbyPhase = true;
+		WorldSync.ForgetAllPeers();
+		_runSnapParts.Clear();
+		_lastBroadcastScene = null;
+		WorldSync.RestoreMenuCursor();
 	}
 
 	public void BroadcastHostScene(string sceneName)
@@ -166,6 +191,11 @@ internal sealed class MpSession
 		if (string.IsNullOrWhiteSpace(sceneName)) return;
 		HostSceneName = sceneName;
 		if (!IsHost || !Linked) return;
+		if (string.Equals(_lastBroadcastScene, sceneName, StringComparison.OrdinalIgnoreCase) &&
+		    Time.unscaledTime - _lastBroadcastSceneAt < 1.25f)
+			return;
+		_lastBroadcastScene = sceneName;
+		_lastBroadcastSceneAt = Time.unscaledTime;
 		Broadcast(NetProtocol.LoadScene(sceneName), true);
 		Plugin.Log.LogInfo($"Host scene broadcast: {sceneName}");
 	}
@@ -228,9 +258,24 @@ internal sealed class MpSession
 			AddChat($"* Local ready={ready}");
 	}
 
+	/// <summary>Host authority: treat every connected peer as Ready (Start Race / Force start).</summary>
+	public void MarkAllPeersReady()
+	{
+		LocalReady = true;
+		var ids = new List<ulong>(Peers.Keys);
+		foreach (var id in ids)
+		{
+			var p = Peers[id];
+			p.Ready = true;
+			Peers[id] = p;
+		}
+		Broadcast(NetProtocol.Ready(true), true);
+	}
+
 	public void ClearAllReady()
 	{
 		LocalReady = false;
+		ForceStartUnlocked = false;
 		var ids = new List<ulong>(Peers.Keys);
 		foreach (var id in ids)
 		{
@@ -290,11 +335,30 @@ internal sealed class MpSession
 	private void AssignGuestSlot(ulong peerId)
 	{
 		if (PeerSlots.ContainsKey(peerId)) return;
-		byte slot = _nextGuestSlot;
-		if (slot < 255) _nextGuestSlot++;
+		var used = new HashSet<byte>();
+		foreach (var s in PeerSlots.Values) used.Add(s);
+		used.Add((byte)Mathf.Clamp(LocalSlot, 0, 255));
+		byte slot = 1;
+		while (used.Contains(slot) && slot < 255) slot++;
 		PeerSlots[peerId] = slot;
+		_nextGuestSlot = (byte)Mathf.Min(255, slot + 1);
 		Plugin.Log.LogInfo($"Assigned peer {peerId} → grid slot {slot}");
 	}
+
+	/// <summary>Host override when a guest forgets Ready — unlocks MenuManager.StartRace.</summary>
+	public bool ForceStartUnlocked { get; private set; }
+
+	public void UnlockForceStart()
+	{
+		if (!IsHost) return;
+		ForceStartUnlocked = true;
+		InLobbyPhase = false;
+		MarkAllPeersReady();
+		AddChat("* Host unlocked Start Race (force)");
+		Plugin.Log.LogInfo("Host force-start unlocked");
+	}
+
+	public void ClearForceStart() => ForceStartUnlocked = false;
 
 	private void Handle(NetPacket pkt)
 	{
@@ -307,9 +371,14 @@ internal sealed class MpSession
 			{
 				case MsgType.Hello:
 				{
-					r.ReadByte(); // ver
+					byte ver = r.ReadByte();
 					var announcedId = r.ReadUInt64();
 					var name = NetProtocol.ReadString(r);
+					if (ver != NetProtocol.Version)
+					{
+						AddChat($"* {name} protocol v{ver} (ours v{NetProtocol.Version}) — update mods to match");
+						MpRuntime.Instance?.NotifyChatToast($"* Protocol mismatch with {name}");
+					}
 					// LAN: remap temp EP id → guest's self LocalPeerId so SlotMap keys match.
 					ulong peerKey = pkt.PeerId;
 					if (_lan != null && pkt.LanFrom != null)
@@ -318,12 +387,42 @@ internal sealed class MpSession
 						{
 							_lan.RemapPeer(pkt.PeerId, announcedId, pkt.LanFrom);
 							peerKey = announcedId;
+							// Ghosts/slots may already exist under the temp EP id — move them.
+							MpRuntime.Instance?.RemapPeerIdentity(pkt.PeerId, peerKey);
+							if (PeerSlots.TryGetValue(pkt.PeerId, out var oldSlot))
+							{
+								PeerSlots.Remove(pkt.PeerId);
+								if (!PeerSlots.ContainsKey(peerKey))
+									PeerSlots[peerKey] = oldSlot;
+							}
+							if (Peers.TryGetValue(pkt.PeerId, out var oldPeer))
+							{
+								Peers.Remove(pkt.PeerId);
+								oldPeer.Name = name;
+								oldPeer.LastSeen = Time.unscaledTime;
+								Peers[peerKey] = oldPeer;
+							}
 						}
 						else
 							_lan.RememberPeer(peerKey, pkt.LanFrom);
 					}
 					bool first = !Peers.ContainsKey(peerKey);
-					Peers[peerKey] = new PeerInfo { Name = name, LastSeen = Time.unscaledTime, Hp = 100f };
+					bool keepReady = false;
+					float keepRtt = 0f;
+					if (!first && Peers.TryGetValue(peerKey, out var keep))
+					{
+						keepReady = keep.Ready;
+						keepRtt = keep.RttMs;
+					}
+					Peers[peerKey] = new PeerInfo
+					{
+						Name = name,
+						LastSeen = Time.unscaledTime,
+						Hp = 100f,
+						Ready = keepReady,
+						RttMs = keepRtt,
+						ProtoVer = ver,
+					};
 					if (first)
 					{
 						AddChat($"* {name} connected");
@@ -338,7 +437,9 @@ internal sealed class MpSession
 							_pendingReady.Remove(pkt.PeerId);
 						}
 						SendTo(peerKey, NetProtocol.Hello(LocalName(), LocalId), true);
+						SendTo(peerKey, NetProtocol.Ready(LocalReady), true);
 						MpRuntime.Instance?.BroadcastLocalCarLook(force: true);
+						WorldSync.ForceBroadcastLoadout(this);
 						if (IsHost)
 						{
 							AssignGuestSlot(peerKey);
@@ -350,6 +451,8 @@ internal sealed class MpSession
 							else if (!InLobbyPhase)
 								TryHostStartRace();
 						}
+						// Mid-race join on an already-loaded track: bind a ghost body now.
+						MpRuntime.Instance?.EnsurePeerGhost(peerKey, name);
 					}
 					break;
 				}
@@ -361,17 +464,32 @@ internal sealed class MpSession
 					var speed = r.ReadSingle();
 					var hp = r.ReadSingle();
 					var t = r.ReadSingle();
+					float steer = 0f;
+					byte flags = 0;
+					float engine = -1f;
+					if (ms.Position + 5 <= ms.Length)
+					{
+						steer = r.ReadSingle();
+						flags = r.ReadByte();
+					}
+					if (ms.Position + 4 <= ms.Length)
+						engine = r.ReadSingle();
 					Touch(pkt.PeerId, hp);
-					MpRuntime.Instance?.ApplyRemotePose(pkt.PeerId, id, pos, rot, speed, hp, t);
+					MpRuntime.Instance?.ApplyRemotePose(pkt.PeerId, id, pos, rot, speed, hp, t, steer, flags, engine);
 					break;
 				}
 				case MsgType.Chat:
-					AddChat($"{PeerName(pkt.PeerId)}: {NetProtocol.ReadString(r)}");
+				{
+					var line = $"{PeerName(pkt.PeerId)}: {NetProtocol.ReadString(r)}";
+					AddChat(line);
+					MpRuntime.Instance?.NotifyChatToast(line);
 					break;
+				}
 				case MsgType.Ping:
 				{
 					var seq = r.ReadUInt32();
 					var clientT = r.ReadSingle();
+					Touch(pkt.PeerId);
 					SendTo(pkt.PeerId, NetProtocol.Pong(seq, clientT, Time.unscaledTime), false);
 					break;
 				}
@@ -382,11 +500,17 @@ internal sealed class MpSession
 					r.ReadSingle();
 					LastRttMs = Mathf.Max(0f, (Time.unscaledTime - clientT) * 1000f);
 					Touch(pkt.PeerId);
+					if (Peers.TryGetValue(pkt.PeerId, out var pingPeer))
+					{
+						pingPeer.RttMs = LastRttMs;
+						Peers[pkt.PeerId] = pingPeer;
+					}
 					break;
 				}
 				case MsgType.Ready:
 				{
 					var ready = r.ReadByte() != 0;
+					Touch(pkt.PeerId);
 					if (Peers.TryGetValue(pkt.PeerId, out var p))
 					{
 						bool changed = p.Ready != ready;
@@ -486,6 +610,9 @@ internal sealed class MpSession
 					}
 					RaceSync.ApplyPacket(seed, shortRace, variant, laps, weather, map, scene,
 						objKind, objAmount, objTarget, music, cease, selected, freePlay, noBots);
+					// Guest: auto-ready so host StartRace / countdown gate is not stuck.
+					if (!IsHost)
+						SetReady(true, quiet: true);
 					AddChat($"* Race setup: {map} / {weather} / laps={laps}" +
 					        (freePlay ? " [free]" : "") + (noBots ? " [no bots]" : ""));
 					break;
@@ -552,7 +679,71 @@ internal sealed class MpSession
 				{
 					var origin = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
 					var target = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-					WorldSync.SpawnGunTracer(origin, target);
+					ulong shooter = pkt.PeerId;
+					if (ms.Position + 8 <= ms.Length)
+						shooter = r.ReadUInt64();
+					if (shooter == 0) shooter = pkt.PeerId;
+					WorldSync.SpawnGunTracer(origin, target, shooter);
+					break;
+				}
+				case MsgType.PeerLeft:
+				{
+					DropPeer(pkt.PeerId, "left");
+					break;
+				}
+				case MsgType.HornFx:
+				{
+					bool on = r.ReadByte() != 0;
+					WorldSync.ApplyHornFx(pkt.PeerId, on);
+					break;
+				}
+				case MsgType.WorldPing:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.SpawnWorldPing(pos, PeerName(pkt.PeerId));
+					AddChat($"* {PeerName(pkt.PeerId)} pinged the map");
+					break;
+				}
+				case MsgType.MoneyFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyMoneyFx(pos);
+					break;
+				}
+				case MsgType.DestructibleFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyDestructibleFx(pos);
+					break;
+				}
+				case MsgType.JumpFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyJumpFx(pkt.PeerId, pos);
+					break;
+				}
+				case MsgType.TrainSnap:
+				{
+					var index = r.ReadByte();
+					var dist = r.ReadSingle();
+					var moving = r.ReadByte() != 0;
+					if (!IsHost)
+						WorldSync.ApplyTrainSnap(index, dist, moving);
+					break;
+				}
+				case MsgType.GearFx:
+				{
+					var gear = r.ReadSByte();
+					var inGear = r.ReadByte() != 0;
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.SetGear(gear, inGear);
+					break;
+				}
+				case MsgType.TotemFx:
+				{
+					var healed = r.ReadSingle();
+					var left = r.ReadInt32();
+					WorldSync.ApplyTotemFx(pkt.PeerId, healed, left);
+					AddChat($"* {PeerName(pkt.PeerId)} used totem ({left} left)");
 					break;
 				}
 				case MsgType.MapSelect:
@@ -579,7 +770,10 @@ internal sealed class MpSession
 					var progress = r.ReadSingle();
 					var place = r.ReadInt32();
 					var finished = r.ReadByte() != 0;
+					bool wasFin = WorldSync.TryGetPeerLap(pkt.PeerId, out var prev) && prev.finished;
 					WorldSync.StorePeerLap(pkt.PeerId, lap, progress, place, finished);
+					if (finished && !wasFin)
+						MpRuntime.Instance?.NotifyChatToast($"* {PeerName(pkt.PeerId)} finished #{place}");
 					break;
 				}
 				case MsgType.AmmoFx:
@@ -612,6 +806,533 @@ internal sealed class MpSession
 					var json = NetProtocol.ReadString(r);
 					if (!IsHost)
 						WorldSync.ApplyRunSnap(json);
+					break;
+				}
+				case MsgType.RunSnapPart:
+				{
+					if (IsHost) break;
+					var id = r.ReadUInt32();
+					var index = r.ReadByte();
+					var count = r.ReadByte();
+					var len = r.ReadUInt16();
+					var chunk = r.ReadBytes(len);
+					if (!TryAssembleRunSnap(id, index, count, chunk, out var json)) break;
+					WorldSync.ApplyRunSnap(json);
+					break;
+				}
+				case MsgType.SlowMoFx:
+				{
+					var duration = r.ReadSingle();
+					WorldSync.ApplySlowMoFx(pkt.PeerId, duration);
+					break;
+				}
+				case MsgType.DriftFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var meters = r.ReadSingle();
+					WorldSync.ApplyDriftFx(pkt.PeerId, pos, meters);
+					break;
+				}
+				case MsgType.SpunOutFx:
+				{
+					var speed = r.ReadSingle();
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.PulseSpinOut(speed);
+					WorldSync.ApplySpunOutFx(pkt.PeerId, speed);
+					break;
+				}
+				case MsgType.CarDamagedFx:
+				{
+					var fraction = r.ReadSingle();
+					var kind = r.ReadByte();
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.PulseDamaged(fraction);
+					WorldSync.ApplyCarDamagedFx(pkt.PeerId, fraction, kind);
+					break;
+				}
+				case MsgType.AmmoState:
+				{
+					var mags = r.ReadByte();
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.SetAmmo(mags);
+					break;
+				}
+				case MsgType.ExhaustFx:
+				{
+					bool on = r.ReadByte() != 0;
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.SetExhaust(on);
+					break;
+				}
+				case MsgType.MagnetFx:
+				{
+					bool on = r.ReadByte() != 0;
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.SetMagnet(on);
+					break;
+				}
+				case MsgType.GlueFx:
+				{
+					bool on = r.ReadByte() != 0;
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.SetGlue(on);
+					break;
+				}
+				case MsgType.SpikeFx:
+				{
+					var point = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var dir = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplySpikeFx(pkt.PeerId, point, dir);
+					break;
+				}
+				case MsgType.GlassFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyGlassFx(pkt.PeerId, pos);
+					break;
+				}
+				case MsgType.TrailFx:
+				{
+					bool on = r.ReadByte() != 0;
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.SetTrails(on);
+					break;
+				}
+				case MsgType.TreeFx:
+				{
+					var terrainIndex = r.ReadByte();
+					var treeIndex = r.ReadInt32();
+					var push = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyTreeFx(terrainIndex, treeIndex, push);
+					break;
+				}
+				case MsgType.MudFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyMudFx(pkt.PeerId, pos);
+					break;
+				}
+				case MsgType.TrapFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var dmg = r.ReadSingle();
+					WorldSync.ApplyTrapFx(pkt.PeerId, pos, dmg);
+					break;
+				}
+				case MsgType.HammerFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var dmg = r.ReadSingle();
+					WorldSync.ApplyHammerFx(pkt.PeerId, pos, dmg);
+					break;
+				}
+				case MsgType.KillFeed:
+				{
+					var text = NetProtocol.ReadString(r);
+					MpRuntime.Instance?.NotifyChatToast(text);
+					AddChat(text);
+					break;
+				}
+				case MsgType.LeechFx:
+				{
+					bool on = r.ReadByte() != 0;
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.SetLeech(on);
+					break;
+				}
+				case MsgType.BurnFx:
+				{
+					bool on = r.ReadByte() != 0;
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.SetBurning(on);
+					break;
+				}
+				case MsgType.InvertFx:
+				{
+					WorldSync.ApplyInvertFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.ComboFx:
+				{
+					var name = NetProtocol.ReadString(r);
+					var value = r.ReadSingle();
+					WorldSync.ApplyComboFx(pkt.PeerId, name, value);
+					break;
+				}
+				case MsgType.CheckpointFx:
+				{
+					var index = r.ReadByte();
+					var starting = r.ReadByte() != 0;
+					WorldSync.ApplyCheckpointFx(pkt.PeerId, index, starting);
+					break;
+				}
+				case MsgType.GuillotineFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyGuillotineFx(pkt.PeerId, pos);
+					break;
+				}
+				case MsgType.DrainFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyDrainFx(pkt.PeerId, pos);
+					break;
+				}
+				case MsgType.TrampleFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var strength = r.ReadSingle();
+					var radius = r.ReadSingle();
+					WorldSync.ApplyTrampleFx(pos, strength, radius);
+					break;
+				}
+				case MsgType.ExplodeFx:
+				{
+					var kind = r.ReadByte();
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyExplodeFx(pkt.PeerId, kind, pos);
+					break;
+				}
+				case MsgType.BotFlameFx:
+				{
+					var botIndex = r.ReadByte();
+					bool on = r.ReadByte() != 0;
+					if (!IsHost)
+						WorldSync.ApplyBotFlameFx(botIndex, on);
+					break;
+				}
+				case MsgType.AmmoEatFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyAmmoEatFx(pkt.PeerId, pos);
+					break;
+				}
+				case MsgType.ObjectiveFx:
+				{
+					var line = NetProtocol.ReadString(r);
+					MpRuntime.Instance?.NotifyChatToast(line);
+					AddChat(line);
+					break;
+				}
+				case MsgType.TreeKickFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var lean = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var deg = r.ReadSingle();
+					WorldSync.ApplyTreeKickFx(pos, lean, deg);
+					break;
+				}
+				case MsgType.RefillFx:
+				{
+					var kind = r.ReadByte();
+					var amount = r.ReadSingle();
+					WorldSync.ApplyRefillFx(pkt.PeerId, kind, amount);
+					break;
+				}
+				case MsgType.ThreatFx:
+				{
+					bool on = r.ReadByte() != 0;
+					WorldSync.ApplyThreatFx(pkt.PeerId, on);
+					break;
+				}
+				case MsgType.CanisterFx:
+				{
+					var charge = r.ReadSingle();
+					WorldSync.ApplyCanisterFx(pkt.PeerId, charge);
+					break;
+				}
+				case MsgType.CamFx:
+				{
+					var outside = r.ReadByte();
+					WorldSync.ApplyCamFx(pkt.PeerId, outside);
+					break;
+				}
+				case MsgType.HbLockFx:
+				{
+					bool locked = r.ReadByte() != 0;
+					WorldSync.ApplyHbLockFx(pkt.PeerId, locked);
+					break;
+				}
+				case MsgType.ShortcutFx:
+				{
+					var metres = r.ReadSingle();
+					WorldSync.ApplyShortcutFx(pkt.PeerId, metres);
+					break;
+				}
+				case MsgType.EarnFx:
+				{
+					var label = NetProtocol.ReadString(r);
+					var amount = r.ReadSingle();
+					WorldSync.ApplyEarnFx(pkt.PeerId, label, amount);
+					break;
+				}
+				case MsgType.BlinkFx:
+				{
+					var blinks = r.ReadInt32();
+					MpRuntime.Instance?.GetGhost(pkt.PeerId)?.PulseBlink(blinks);
+					break;
+				}
+				case MsgType.HintFx:
+				{
+					var kind = r.ReadByte();
+					bool on = r.ReadByte() != 0;
+					WorldSync.ApplyHintFx(pkt.PeerId, kind, on);
+					break;
+				}
+				case MsgType.CabinAmmoFx:
+				{
+					var picked = r.ReadByte();
+					var mags = r.ReadInt32();
+					WorldSync.ApplyCabinAmmoFx(pkt.PeerId, picked != 0, mags);
+					break;
+				}
+				case MsgType.AimFx:
+				{
+					bool aiming = r.ReadByte() != 0;
+					WorldSync.ApplyAimFx(pkt.PeerId, aiming);
+					break;
+				}
+				case MsgType.MagFx:
+				{
+					bool seated = r.ReadByte() != 0;
+					WorldSync.ApplyMagFx(pkt.PeerId, seated);
+					break;
+				}
+				case MsgType.PauseFx:
+				{
+					bool paused = r.ReadByte() != 0;
+					WorldSync.ApplyPauseFx(pkt.PeerId, paused);
+					break;
+				}
+				case MsgType.CutoffSay:
+				{
+					var line = NetProtocol.ReadString(r);
+					WorldSync.ApplyCutoffSay(line);
+					break;
+				}
+				case MsgType.GunActFx:
+				{
+					var kind = r.ReadByte();
+					var param = r.ReadSingle();
+					WorldSync.ApplyGunActFx(pkt.PeerId, kind, param);
+					break;
+				}
+				case MsgType.SmokeFx:
+				{
+					bool on = r.ReadByte() != 0;
+					WorldSync.ApplySmokeFx(pkt.PeerId, on);
+					break;
+				}
+				case MsgType.GlassCrackFx:
+				{
+					var strength = r.ReadSingle();
+					WorldSync.ApplyGlassCrackFx(pkt.PeerId, strength);
+					break;
+				}
+				case MsgType.WeatherFx:
+				{
+					var name = NetProtocol.ReadString(r);
+					if (!IsHost)
+						WorldSync.ApplyWeatherFx(name);
+					break;
+				}
+				case MsgType.HbGrabFx:
+				{
+					WorldSync.ApplyHbGrabFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.HealFx:
+				{
+					var amount = r.ReadSingle();
+					WorldSync.ApplyHealFx(pkt.PeerId, amount);
+					break;
+				}
+				case MsgType.ShiftHitFx:
+				{
+					var kind = r.ReadByte();
+					WorldSync.ApplyShiftHitFx(pkt.PeerId, kind);
+					break;
+				}
+				case MsgType.TrainMoveFx:
+				{
+					var index = r.ReadByte();
+					bool moving = r.ReadByte() != 0;
+					if (!IsHost)
+						WorldSync.ApplyTrainMoveFx(index, moving);
+					break;
+				}
+				case MsgType.KillAmmoFx:
+				{
+					var mags = r.ReadInt32();
+					WorldSync.ApplyKillAmmoFx(pkt.PeerId, mags);
+					break;
+				}
+				case MsgType.FeatFx:
+				{
+					var featId = r.ReadInt32();
+					var label = NetProtocol.ReadString(r);
+					WorldSync.ApplyFeatFx(pkt.PeerId, featId, label);
+					break;
+				}
+				case MsgType.GunTypeFx:
+				{
+					var gun = r.ReadByte();
+					WorldSync.ApplyGunTypeFx(pkt.PeerId, gun);
+					break;
+				}
+				case MsgType.ShiftTypeFx:
+				{
+					var sh = r.ReadByte();
+					WorldSync.ApplyShiftTypeFx(pkt.PeerId, sh);
+					break;
+				}
+				case MsgType.ShellFx:
+				{
+					var grabbed = r.ReadByte();
+					WorldSync.ApplyShellFx(pkt.PeerId, grabbed != 0);
+					break;
+				}
+				case MsgType.SlideFx:
+				{
+					var kind = r.ReadByte();
+					WorldSync.ApplySlideFx(pkt.PeerId, kind);
+					break;
+				}
+				case MsgType.ClipFx:
+				{
+					var consumed = r.ReadInt32();
+					WorldSync.ApplyClipFx(pkt.PeerId, consumed);
+					break;
+				}
+				case MsgType.UnlockFx:
+				{
+					var id = NetProtocol.ReadString(r);
+					var name = NetProtocol.ReadString(r);
+					WorldSync.ApplyUnlockFx(pkt.PeerId, id, name);
+					break;
+				}
+				case MsgType.CamLookFx:
+				{
+					var released = r.ReadByte();
+					WorldSync.ApplyCamLookFx(pkt.PeerId, released != 0);
+					break;
+				}
+				case MsgType.RepairFx:
+				{
+					WorldSync.ApplyRepairFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.GrimeFx:
+				{
+					var amount = r.ReadSingle();
+					WorldSync.ApplyGrimeFx(pkt.PeerId, amount);
+					break;
+				}
+				case MsgType.MagShotFx:
+				{
+					WorldSync.ApplyMagShotFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.WindshieldFx:
+				{
+					bool visible = r.ReadByte() != 0;
+					WorldSync.ApplyWindshieldFx(pkt.PeerId, visible);
+					break;
+				}
+				case MsgType.ObjSayFx:
+				{
+					var line = NetProtocol.ReadString(r);
+					var seconds = r.ReadSingle();
+					WorldSync.ApplyObjSayFx(line, seconds);
+					break;
+				}
+				case MsgType.SteerLockFx:
+				{
+					bool locked = r.ReadByte() != 0;
+					WorldSync.ApplySteerLockFx(pkt.PeerId, locked);
+					break;
+				}
+				case MsgType.RecenterFx:
+				{
+					WorldSync.ApplyRecenterFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.MatchRevFx:
+				{
+					WorldSync.ApplyMatchRevFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.RecordFx:
+				{
+					var label = NetProtocol.ReadString(r);
+					var seconds = r.ReadSingle();
+					WorldSync.ApplyRecordFx(pkt.PeerId, label, seconds);
+					break;
+				}
+				case MsgType.LapAheadFx:
+				{
+					var laps = r.ReadInt32();
+					WorldSync.ApplyLapAheadFx(pkt.PeerId, laps);
+					break;
+				}
+				case MsgType.NosUpFx:
+				{
+					WorldSync.ApplyNosUpFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.PartsFx:
+				{
+					WorldSync.ApplyPartsFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.ShakeFx:
+				{
+					var severity = r.ReadSingle();
+					WorldSync.ApplyShakeFx(pkt.PeerId, severity);
+					break;
+				}
+				case MsgType.ChickenFx:
+				{
+					var count = r.ReadInt32();
+					WorldSync.ApplyChickenFx(pkt.PeerId, count);
+					break;
+				}
+				case MsgType.ChickenGoneFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyChickenGoneFx(pos);
+					break;
+				}
+				case MsgType.ItemUseFx:
+				{
+					WorldSync.ApplyItemUseFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.ModelFx:
+				{
+					WorldSync.ApplyModelFx(pkt.PeerId);
+					break;
+				}
+				case MsgType.TornadoSnap:
+				{
+					if (IsHost) break;
+					int n = r.ReadByte();
+					var items = new List<(byte idx, Vector3 pos)>(n);
+					for (int i = 0; i < n; i++)
+					{
+						byte idx = r.ReadByte();
+						var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+						items.Add((idx, pos));
+					}
+					WorldSync.ApplyTornadoSnap(items);
+					break;
+				}
+				case MsgType.BarrelFx:
+				{
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyBarrelFx(pos);
+					break;
+				}
+				case MsgType.DiceFx:
+				{
+					var kind = r.ReadByte();
+					WorldSync.ApplyDiceFx(pkt.PeerId, kind);
+					break;
+				}
+				case MsgType.BeerFx:
+				{
+					WorldSync.ApplyBeerFx(pkt.PeerId);
 					break;
 				}
 				case MsgType.DentFx:
@@ -722,6 +1443,87 @@ internal sealed class MpSession
 		{
 			Peers[id] = new PeerInfo { Name = id.ToString(), LastSeen = Time.unscaledTime, Hp = hp ?? 100f };
 		}
+	}
+
+	/// <summary>Remove a peer from lobby/race state (leave packet, timeout, Steam lobby drop).</summary>
+	public void DropPeer(ulong peerId, string reason = "left")
+	{
+		if (peerId == 0 || peerId == LocalId) return;
+		if (!Peers.ContainsKey(peerId) && !PeerSlots.ContainsKey(peerId)) return;
+		AddChat($"* {PeerName(peerId)} {reason}");
+		Peers.Remove(peerId);
+		PeerSlots.Remove(peerId);
+		_pendingReady.Remove(peerId);
+		WorldSync.ForgetPeer(peerId);
+		MpRuntime.Instance?.DespawnGhost(peerId);
+		if (IsHost) BroadcastSlotMap();
+	}
+
+	private bool TryAssembleRunSnap(uint id, byte index, byte count, byte[] chunk, out string json)
+	{
+		json = "";
+		if (count == 0 || index >= count) return false;
+		float now = Time.unscaledTime;
+		List<uint>? expired = null;
+		foreach (var kv in _runSnapParts)
+		{
+			if (kv.Value.ExpiresAt < now)
+				(expired ??= new List<uint>()).Add(kv.Key);
+		}
+		if (expired != null)
+			foreach (var e in expired) _runSnapParts.Remove(e);
+
+		if (!_runSnapParts.TryGetValue(id, out var asm) || asm.Count != count)
+		{
+			asm = new RunSnapAssembly
+			{
+				Count = count,
+				Parts = new byte[count][],
+				ExpiresAt = now + 8f,
+			};
+			_runSnapParts[id] = asm;
+		}
+		asm.Parts[index] = chunk;
+		asm.ExpiresAt = now + 8f;
+		for (int i = 0; i < count; i++)
+			if (asm.Parts[i] == null) return false;
+
+		int total = 0;
+		for (int i = 0; i < count; i++) total += asm.Parts[i]!.Length;
+		var all = new byte[total];
+		int o = 0;
+		for (int i = 0; i < count; i++)
+		{
+			var p = asm.Parts[i]!;
+			Buffer.BlockCopy(p, 0, all, o, p.Length);
+			o += p.Length;
+		}
+		_runSnapParts.Remove(id);
+		json = Encoding.UTF8.GetString(all);
+		return true;
+	}
+
+	/// <summary>Steam: members who left the lobby without PeerLeft still get cleaned up.</summary>
+	public void PruneSteamLobbyDropouts()
+	{
+		if (_steam?.Lobby == null || !Linked) return;
+		var live = new HashSet<ulong>();
+		try
+		{
+			foreach (var m in _steam.Lobby.Value.Members)
+				live.Add((ulong)m.Id);
+		}
+		catch { return; }
+		live.Add(LocalId);
+		List<ulong>? gone = null;
+		foreach (var id in Peers.Keys)
+		{
+			if (!live.Contains(id))
+				(gone ??= new List<ulong>()).Add(id);
+		}
+		if (gone == null) return;
+		foreach (var id in gone)
+			DropPeer(id, "left lobby");
 	}
 
 	private string PeerName(ulong id) => Peers.TryGetValue(id, out var p) ? p.Name : id.ToString();

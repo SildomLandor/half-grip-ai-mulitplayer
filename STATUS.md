@@ -1,10 +1,10 @@
-﻿# Half Grip Multiplayer — Status
+# Half Grip Multiplayer ? Status
 
-**Version:** 0.9.0
-**Protocol:** v9
+**Version:** 0.10.28
+**Protocol:** v40
 
-**0.9.0:** blast/ram peer damage, rockets, pickup tombstones, block slow-mo/pause timescale, guest EndRace gate, quit abort.
+**Release 0.10.28:** game-styled Multiplayer menu (MainMenu + StartMenu), chicken/tornado/barrel sync, F5 Ready / F4 Force, pose engineIndicator, late-join world snaps.
 
-**Economy:** shop/money/loadout per-player.
+**Economy:** per-player (shared shop planned next).
 
-**Test:** `scripts\deploy.ps1` then `scripts\launch-dual.ps1`
+**Install:** GitHub release `v0.10.28` game-root or plugin-only zip.

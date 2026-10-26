@@ -249,20 +249,22 @@ internal static class RaceSync
 		var marker = grid[slot];
 		if (marker == null) return;
 
+		// Slot 0: vanilla PlacePlayerOnGrid already put the host correctly — only refresh lap cache.
+		if (slot == 0)
+		{
+			RefreshLapIndexAfterTeleport(tm, car.gameObject);
+			Plugin.Log.LogInfo("Local player kept on slot 0 (vanilla grid)");
+			return;
+		}
+
 		var pos = marker.position;
-		// Match TrackManager.PlacePlayerOnGrid height adjust when variants active.
-		if (TrackVariants.Active && grid[0] != null && slot > 0)
+		if (TrackVariants.Active && grid[0] != null)
 		{
 			float dy = car.transform.position.y - grid[0].position.y;
 			pos = marker.position + Vector3.up * dy;
 		}
-		else if (TrackVariants.Active && slot == 0)
-		{
-			// playerStart already placed by vanilla for slot 0
-		}
 
-		// Use the grid marker's own facing (player spawn pads are authored correctly).
-		// Forced +90° made cars drive sideways → LapCounter treated motion as backwards → no laps.
+		// Grid marker facing + layout mirror/reverse. Do not force +90° (that broke laps).
 		var rot = LayoutHeading(marker.rotation);
 		TeleportCar(car, pos, rot);
 		RefreshLapIndexAfterTeleport(tm, car.gameObject);
@@ -294,6 +296,28 @@ internal static class RaceSync
 		}
 	}
 
+	/// <summary>
+	/// Periodic harden: local player must stay on LapManager.leaderboard with a valid closest index.
+	/// Does not touch ghosts (they use claimed enemies already registered by vanilla).
+	/// </summary>
+	public static void EnsureLocalLapTracking()
+	{
+		var tm = UnityEngine.Object.FindFirstObjectByType<TrackManager>();
+		if (tm?.lapManager == null || tm.playerCarController == null) return;
+		var carGo = tm.playerCarController.gameObject;
+		var lm = tm.lapManager;
+		try
+		{
+			if (lm.leaderboard != null && !lm.leaderboard.ContainsKey(carGo))
+				lm.RegisterCar(carGo);
+			RefreshLapIndexAfterTeleport(tm, carGo);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"EnsureLocalLapTracking: {ex.Message}");
+		}
+	}
+
 	private static Quaternion LayoutHeading(Quaternion drawn)
 	{
 		try
@@ -307,23 +331,46 @@ internal static class RaceSync
 		return drawn;
 	}
 
-	/// <summary>Remove AI cars so only human peers remain (sandbox).</summary>
+	/// <summary>
+	/// Remove surplus AI. Keep cars already claimed by ghosts (RemotePlayerHitbox)
+	/// and one nearest car per remote peer grid slot so NoBots still has bodies to claim.
+	/// </summary>
 	public static void StripBotsIfNeeded(TrackManager tm)
 	{
 		if (!NoBots || tm == null) return;
+		var keep = new HashSet<int>();
+		foreach (var e in tm.Enemies)
+		{
+			if (e == null) continue;
+			if (e.GetComponent<RemotePlayerHitbox>() != null)
+				keep.Add(e.GetInstanceID());
+		}
+		var session = MpRuntime.Instance?.Session;
+		if (session != null)
+		{
+			var claimedNear = new HashSet<int>(keep);
+			foreach (var kv in session.PeerSlots)
+			{
+				if (kv.Key == session.LocalId) continue;
+				var marker = SlotMarker(tm, kv.Value);
+				if (marker == null) continue;
+				var near = FindEnemyNear(tm, marker.position, claimedNear);
+				if (near == null) continue;
+				keep.Add(near.GetInstanceID());
+				claimedNear.Add(near.GetInstanceID());
+			}
+		}
+
 		var doomed = new List<EnemyController>();
 		foreach (var e in tm.Enemies)
 		{
 			if (e == null) continue;
-			if (e.GetComponent<RemotePlayerHitbox>() != null) continue;
+			if (keep.Contains(e.GetInstanceID())) continue;
 			doomed.Add(e);
 		}
 		foreach (var e in doomed)
 		{
-			try
-			{
-				UnityEngine.Object.Destroy(e.gameObject);
-			}
+			try { UnityEngine.Object.Destroy(e.gameObject); }
 			catch { /* */ }
 		}
 		try
@@ -336,7 +383,7 @@ internal static class RaceSync
 			}
 		}
 		catch { /* */ }
-		Plugin.Log.LogInfo($"NoBots: stripped {doomed.Count} AI cars");
+		Plugin.Log.LogInfo($"NoBots: stripped {doomed.Count} AI cars, kept {keep.Count} for peers");
 	}
 
 	public static Transform? SlotMarker(TrackManager tm, int slot)

@@ -17,6 +17,9 @@ public sealed class Plugin : BaseUnityPlugin
 	internal ConfigEntry<KeyCode> ToggleUiKey = null!;
 	internal ConfigEntry<KeyCode> HostKey = null!;
 	internal ConfigEntry<KeyCode> LeaveKey = null!;
+	internal ConfigEntry<KeyCode> PingKey = null!;
+	internal ConfigEntry<KeyCode> ReadyKey = null!;
+	internal ConfigEntry<KeyCode> ForceStartKey = null!;
 	internal ConfigEntry<float> PoseHz = null!;
 	internal ConfigEntry<bool> GhostTransparent = null!;
 	internal ConfigEntry<bool> FriendsOnly = null!;
@@ -33,6 +36,9 @@ public sealed class Plugin : BaseUnityPlugin
 		ToggleUiKey = Config.Bind("Hotkeys", "ToggleUi", KeyCode.F6, "Show/hide multiplayer menu");
 		HostKey = Config.Bind("Hotkeys", "HostSteam", KeyCode.F7, "Host Steam friends lobby");
 		LeaveKey = Config.Bind("Hotkeys", "Leave", KeyCode.F8, "Leave session");
+		PingKey = Config.Bind("Hotkeys", "WorldPing", KeyCode.Mouse2, "Ping map marker for peers (middle mouse)");
+		ReadyKey = Config.Bind("Hotkeys", "ReadyToggle", KeyCode.F5, "Toggle lobby Ready while linked");
+		ForceStartKey = Config.Bind("Hotkeys", "ForceStart", KeyCode.F4, "Host: unlock force-start while waiting on Ready");
 		PoseHz = Config.Bind("Net", "PoseHz", 20f, new ConfigDescription("Pose sync Hz", new AcceptableValueRange<float>(5f, 60f)));
 		GhostTransparent = Config.Bind("Visual", "GhostTransparent", true, "Tint remote cars");
 		FriendsOnly = Config.Bind("Steam", "FriendsOnly", true, "Friends-only vs private lobby");
@@ -45,7 +51,7 @@ public sealed class Plugin : BaseUnityPlugin
 		DontDestroyOnLoad(go);
 		go.AddComponent<MpRuntime>();
 
-		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — loadout/laps/cursor/gunfx.");
+		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — WIP (no release until asked).");
 	}
 
 	private void OnDestroy() => _harmony?.UnpatchSelf();
@@ -55,5 +61,5 @@ internal static class PluginInfo
 {
 	public const string GUID = "landor.halfgrip.multiplayer";
 	public const string Name = "Half Grip Multiplayer";
-	public const string Version = "0.9.4";
+	public const string Version = "0.10.28";
 }
