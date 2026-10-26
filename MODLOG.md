@@ -217,3 +217,12 @@ Protocol v6. Synced: hazards seed, objective/boss/music/ceasefire in RaceSetup, 
 
 - Money/inventory/loadout stay local; ShopState no longer overwrites wallets; RaceEnd banks local payout.
 - RunSnap shares run graph only. AI gun hit peers + FX; bot HP/death via BotPose; DentFx; LAN reliable x3; leaderboard register ghosts.
+
+## 0.8.0 — laps, tires, shield, collide, cutoff, LAN reliable (2026-10-26)
+
+- Protocol Version = 8. MsgType TireFx/ShieldFx/CollideImpulse/CutoffState.
+- StorePeerLap updates LapManager.leaderboard for claimed ghosts.
+- ShopState fully ignored; late-join no longer sends shop.offer; wallets/loadout private.
+- LanTransport: seq/ack reliable channel (resend 120ms, TTL 8s).
+- Peer collision impulses via distance probe + CollideImpulse.
+- RaceCutoff.SecondsLeft host→guest; nitro off when activeBoost hits 0; GunFx plays shootSounds at origin.

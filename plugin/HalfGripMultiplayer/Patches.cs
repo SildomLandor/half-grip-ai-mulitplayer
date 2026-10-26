@@ -602,3 +602,45 @@ internal static class RunStartSnapPatches
 		WorldSync.BroadcastRunSnap(rt.Session);
 	}
 }
+
+/// <summary>Local tire burst → peers show the same wheel dead.</summary>
+[HarmonyPatch(typeof(CarTireDamage), "Burst")]
+internal static class TireBurstSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(CarTireDamage __instance, int index)
+	{
+		if (WorldSync.SuppressTireBroadcast) return;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		if (__instance == null) return;
+		var cc = __instance.GetComponentInParent<CarControllerNew>();
+		if (cc == null || !cc.isPlayer) return;
+		var point = cc.transform.position;
+		try
+		{
+			var wheels = AccessTools.Field(typeof(CarTireDamage), "wheels")?.GetValue(__instance) as Transform[];
+			if (wheels != null && index >= 0 && index < wheels.Length && wheels[index] != null)
+				point = wheels[index].position;
+		}
+		catch { /* fallback pos */ }
+		rt.Session.Broadcast(NetProtocol.TireFx((byte)Mathf.Clamp(index, 0, 255), point), true);
+	}
+}
+
+/// <summary>Bullet shield block FX on remotes.</summary>
+[HarmonyPatch(typeof(BulletShield), nameof(BulletShield.Block))]
+internal static class ShieldBlockSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(BulletShield __instance, Vector3 point)
+	{
+		if (WorldSync.SuppressShieldBroadcast) return;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		if (__instance == null) return;
+		var cc = __instance.GetComponentInParent<CarControllerNew>();
+		if (cc == null || !cc.isPlayer) return;
+		rt.Session.Broadcast(NetProtocol.ShieldFx(point), false);
+	}
+}

@@ -15,10 +15,23 @@ internal static class WorldSync
 	private static readonly Dictionary<ulong, List<string>> PeerLoadouts = new();
 	private static readonly Dictionary<ulong, (int lap, float progress, int place, bool finished)> PeerLaps = new();
 	private static readonly Dictionary<ulong, List<GameObject>> GhostExtras = new();
+	private static readonly Dictionary<ulong, float> CollideCooldown = new();
 	private static bool _applyingRemoteRaceEnd;
 	private static bool _applyingRemoteMapSelect;
-	private static float _lastShopPulse;
+	private static bool _applyingRemoteTire;
+	private static bool _applyingRemoteShield;
+	private static bool _applyingRemoteCutoff;
 	private static string _lastLoadoutKey = "";
+	private static bool _localNitroOn;
+	private static float _lastCutoffBroadcast = -999f;
+	private static AudioClip[]? _cachedShootSounds;
+
+	private static readonly FieldInfo? RaceCutoffInstance =
+		AccessTools.Field(typeof(RaceCutoff), "instance");
+	private static readonly FieldInfo? RaceCutoffEndsAt =
+		AccessTools.Field(typeof(RaceCutoff), "endsAt");
+	private static readonly MethodInfo? TireBurstMethod =
+		AccessTools.Method(typeof(CarTireDamage), "Burst");
 
 	private static readonly PropertyInfo? SelectedIndexProp =
 		AccessTools.Property(typeof(RunState), nameof(RunState.SelectedIndex));
@@ -223,32 +236,19 @@ internal static class WorldSync
 	}
 
 	/// <summary>
-	/// Money and inventory stay per-player. Optionally share the shop panel catalog string only
-	/// so both see the same offer cards — never overwrite wallets.
+	/// Shop catalog, wallets, and inventory are strictly per-player — never sync.
+	/// Kept as no-ops so older peers' ShopState packets are ignored safely.
 	/// </summary>
-	public static void PulseShopOfferCatalog(MpSession session)
+	public static void PulseShopOfferCatalog(MpSession? session)
 	{
-		if (session == null || !session.Linked || !session.IsHost) return;
-		if (Time.unscaledTime < _lastShopPulse) return;
-		_lastShopPulse = Time.unscaledTime + 3f;
-		string offer = "";
-		try { offer = SaveData.GetString("shop.offer") ?? ""; } catch { /* */ }
-		// money field unused by guests (sentinel -1)
-		session.Broadcast(NetProtocol.ShopState(-1f, offer), true);
+		_ = session;
 	}
 
 	public static void ApplyShopState(float money, string offerKey)
 	{
-		_ = money; // never apply host wallet
-		try
-		{
-			if (!string.IsNullOrEmpty(offerKey))
-				SaveData.SetString("shop.offer", offerKey);
-		}
-		catch (Exception ex)
-		{
-			Plugin.Log.LogWarning($"Shop offer catalog apply: {ex.Message}");
-		}
+		_ = money;
+		_ = offerKey;
+		// Intentionally ignore — each client's ShopManager / SaveData money & offers stay private.
 	}
 
 	public static void BroadcastRunSnap(MpSession session)
@@ -348,6 +348,32 @@ internal static class WorldSync
 	public static void StorePeerLap(ulong peer, int lap, float progress, int place, bool finished)
 	{
 		PeerLaps[peer] = (lap, progress, place, finished);
+		var ghost = MpRuntime.Instance?.GetGhost(peer);
+		if (ghost?.BoundEnemy == null) return;
+		var tm = UnityEngine.Object.FindFirstObjectByType<TrackManager>();
+		var lm = tm != null ? tm.lapManager : null;
+		if (lm?.leaderboard == null) return;
+		var go = ghost.BoundEnemy.gameObject;
+		if (!lm.leaderboard.TryGetValue(go, out var e))
+		{
+			TryRegisterGhostOnLeaderboard(ghost);
+			if (!lm.leaderboard.TryGetValue(go, out e)) return;
+		}
+		e.currentLap = lap;
+		e.lapProgress = progress;
+		e.position = place;
+		e.isFinished = finished;
+		try
+		{
+			if (lm.trackLine != null && lm.trackLine.trackLength > 0.01f)
+			{
+				float frac = Mathf.Clamp01(progress / 100f);
+				e.totalDistance = (lap + frac) * lm.trackLine.trackLength;
+				e.trackProgress = e.totalDistance;
+			}
+		}
+		catch { /* track line */ }
+		lm.leaderboard[go] = e;
 	}
 
 	public static void SpawnGunTracer(Vector3 origin, Vector3 target)
@@ -363,6 +389,27 @@ internal static class WorldSync
 		lr.startColor = new Color(1f, 0.85f, 0.3f, 0.9f);
 		lr.endColor = new Color(1f, 0.4f, 0.1f, 0.2f);
 		UnityEngine.Object.Destroy(go, 0.18f);
+		PlayRemoteGunSound(origin);
+	}
+
+	private static void PlayRemoteGunSound(Vector3 origin)
+	{
+		try
+		{
+			if (_cachedShootSounds == null || _cachedShootSounds.Length == 0)
+			{
+				foreach (var gun in Resources.FindObjectsOfTypeAll<Gun>())
+				{
+					if (gun?.shootSounds == null || gun.shootSounds.Length == 0) continue;
+					_cachedShootSounds = gun.shootSounds;
+					break;
+				}
+			}
+			if (_cachedShootSounds == null || _cachedShootSounds.Length == 0) return;
+			SoundController.PlayRandomSoundAtPosition(
+				_cachedShootSounds, origin, 0.45f, 5f, 180f, 0.08f);
+		}
+		catch { /* audio optional */ }
 	}
 
 	public static void ApplyAmmoFx(Vector3 pos, int magazines)
@@ -396,6 +443,169 @@ internal static class WorldSync
 			if (sr != null) sr.enabled = on;
 	}
 
+	public static void PulseLocalNitroOff(MpSession session)
+	{
+		if (session == null || !session.Linked) return;
+		bool on = false;
+		try
+		{
+			foreach (var lever in UnityEngine.Object.FindObjectsByType<NNitroLever>(FindObjectsSortMode.None))
+			{
+				if (lever == null) continue;
+				var cc = lever.GetComponentInParent<CarControllerNew>();
+				if (cc == null || !cc.isPlayer) continue;
+				var field = AccessTools.Field(typeof(NNitroLever), "activeBoost");
+				float boost = field != null ? (float)field.GetValue(lever)! : 0f;
+				on = boost > 0.01f;
+				break;
+			}
+		}
+		catch { return; }
+
+		if (_localNitroOn && !on)
+			session.Broadcast(NetProtocol.NitroFx(false, 0f), false);
+		_localNitroOn = on;
+	}
+
+	public static void ApplyTireFx(ulong peer, byte wheelIndex, Vector3 point)
+	{
+		if (_applyingRemoteTire) return;
+		_applyingRemoteTire = true;
+		try
+		{
+			var ghost = MpRuntime.Instance?.GetGhost(peer);
+			if (ghost?.BoundEnemy == null) return;
+			var tire = ghost.BoundEnemy.GetComponent<CarTireDamage>()
+			           ?? ghost.BoundEnemy.GetComponentInChildren<CarTireDamage>(true);
+			if (tire == null) return;
+			TireBurstMethod?.Invoke(tire, new object[] { (int)wheelIndex });
+			_ = point;
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"TireFx: {ex.Message}");
+		}
+		finally
+		{
+			_applyingRemoteTire = false;
+		}
+	}
+
+	public static void ApplyShieldFx(ulong peer, Vector3 point)
+	{
+		if (_applyingRemoteShield) return;
+		_applyingRemoteShield = true;
+		try
+		{
+			var ghost = MpRuntime.Instance?.GetGhost(peer);
+			Transform? root = ghost?.BoundEnemy != null ? ghost.BoundEnemy.transform : ghost?.Root?.transform;
+			if (root == null) return;
+			var shield = root.GetComponentInChildren<BulletShield>(true);
+			shield?.Block(point);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"ShieldFx: {ex.Message}");
+		}
+		finally
+		{
+			_applyingRemoteShield = false;
+		}
+	}
+
+	public static void ApplyCollideImpulse(Vector3 impulse, Vector3 atPoint)
+	{
+		try
+		{
+			var car = FindLocalPlayerCar();
+			if (car == null) return;
+			var rb = car.GetComponent<Rigidbody>();
+			if (rb == null) return;
+			rb.AddForceAtPosition(impulse, atPoint, ForceMode.VelocityChange);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"CollideImpulse: {ex.Message}");
+		}
+	}
+
+	public static void PulsePeerCollisions(MpSession session)
+	{
+		if (session == null || !session.Linked) return;
+		var car = FindLocalPlayerCar();
+		if (car == null) return;
+		var rb = car.GetComponent<Rigidbody>();
+		if (rb == null) return;
+		var localPos = car.transform.position;
+		const float contactRadius = 3.4f;
+		float now = Time.unscaledTime;
+
+		foreach (var ghost in MpRuntime.Instance?.AllGhosts() ?? Array.Empty<GhostCar>())
+		{
+			if (ghost?.Root == null || ghost.Hitbox == null) continue;
+			ulong peer = ghost.Hitbox.PeerId;
+			var gPos = ghost.Root.transform.position;
+			var delta = localPos - gPos;
+			float dist = delta.magnitude;
+			if (dist > contactRadius || dist < 0.05f) continue;
+			float penetration = contactRadius - dist;
+			var dir = delta / dist;
+			Vector3 vel = rb.linearVelocity;
+			float approach = Mathf.Max(0f, -Vector3.Dot(vel, dir));
+			if (penetration < 0.15f && approach < 1.5f) continue;
+			if (CollideCooldown.TryGetValue(peer, out var until) && now < until) continue;
+			CollideCooldown[peer] = now + 0.12f;
+
+			float mag = Mathf.Clamp(penetration * 6f + approach * 0.35f, 1f, 28f);
+			var impulse = dir * mag;
+			var at = Vector3.Lerp(localPos, gPos, 0.5f) + Vector3.up * 0.4f;
+			rb.AddForceAtPosition(impulse, at, ForceMode.VelocityChange);
+			session.SendTo(peer, NetProtocol.CollideImpulse(-impulse, at), false);
+		}
+	}
+
+	public static void PulseCutoffSync(MpSession session)
+	{
+		if (session == null || !session.Linked || !session.IsHost) return;
+		int left = RaceCutoff.SecondsLeft;
+		if (left < 0) return;
+		float now = Time.unscaledTime;
+		if (now - _lastCutoffBroadcast < 0.45f) return;
+		_lastCutoffBroadcast = now;
+		session.Broadcast(NetProtocol.CutoffState(left), true);
+	}
+
+	public static void ApplyCutoffState(float secondsLeft)
+	{
+		if (_applyingRemoteCutoff) return;
+		_applyingRemoteCutoff = true;
+		try
+		{
+			var inst = RaceCutoffInstance?.GetValue(null) as RaceCutoff;
+			if (inst == null || RaceCutoffEndsAt == null) return;
+			float ends = Time.time + Mathf.Max(0f, secondsLeft);
+			RaceCutoffEndsAt.SetValue(inst, ends);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"CutoffState: {ex.Message}");
+		}
+		finally
+		{
+			_applyingRemoteCutoff = false;
+		}
+	}
+
+	public static bool SuppressTireBroadcast => _applyingRemoteTire;
+	public static bool SuppressShieldBroadcast => _applyingRemoteShield;
+
+	private static CarControllerNew? FindLocalPlayerCar()
+	{
+		foreach (var c in UnityEngine.Object.FindObjectsByType<CarControllerNew>(FindObjectsSortMode.None))
+			if (c != null && c.isPlayer && c.isActiveAndEnabled) return c;
+		return UnityEngine.Object.FindFirstObjectByType<TrackManager>()?.playerCarController;
+	}
+
 	public static void ApplyResetFx(ulong peer, Vector3 pos, Quaternion rot)
 	{
 		var ghost = MpRuntime.Instance?.GetGhost(peer);
@@ -423,12 +633,7 @@ internal static class WorldSync
 		}
 		BroadcastMapSelect(session);
 		BroadcastRunSnap(session);
-		try
-		{
-			string offer = SaveData.GetString("shop.offer") ?? "";
-			session.SendTo(peerId, NetProtocol.ShopState(-1f, offer), true);
-		}
-		catch { /* */ }
+		// Shop/money/offers intentionally omitted — each peer keeps private economy.
 		ForceBroadcastLoadout(session); // peer visuals only — never applies to local inventory
 		MpRuntime.Instance?.BroadcastLocalCarLook(force: true);
 		if (session.RaceStartReceived)

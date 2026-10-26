@@ -35,11 +35,15 @@ internal enum MsgType : byte
 	BossKill = 25,
 	RunSnap = 26,
 	DentFx = 27,
+	TireFx = 28,
+	ShieldFx = 29,
+	CollideImpulse = 30,
+	CutoffState = 31,
 }
 
 internal static class NetProtocol
 {
-	public const byte Version = 7;
+	public const byte Version = 8;
 	public const int DefaultLanPort = 27777;
 	public const int SteamChannel = 0;
 
@@ -352,6 +356,45 @@ internal static class NetProtocol
 		w.Write(normal.x); w.Write(normal.y); w.Write(normal.z);
 		w.Write(strength);
 		w.Write(kind);
+		return ms.ToArray();
+	}
+
+	public static byte[] TireFx(byte wheelIndex, Vector3 point)
+	{
+		using var ms = new MemoryStream(20);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.TireFx);
+		w.Write(wheelIndex);
+		w.Write(point.x); w.Write(point.y); w.Write(point.z);
+		return ms.ToArray();
+	}
+
+	public static byte[] ShieldFx(Vector3 point)
+	{
+		using var ms = new MemoryStream(16);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.ShieldFx);
+		w.Write(point.x); w.Write(point.y); w.Write(point.z);
+		return ms.ToArray();
+	}
+
+	/// <summary>Impulse the receiver should apply to their local player rigidbody.</summary>
+	public static byte[] CollideImpulse(Vector3 impulse, Vector3 atPoint)
+	{
+		using var ms = new MemoryStream(28);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.CollideImpulse);
+		w.Write(impulse.x); w.Write(impulse.y); w.Write(impulse.z);
+		w.Write(atPoint.x); w.Write(atPoint.y); w.Write(atPoint.z);
+		return ms.ToArray();
+	}
+
+	public static byte[] CutoffState(float secondsLeft)
+	{
+		using var ms = new MemoryStream(8);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.CutoffState);
+		w.Write(secondsLeft);
 		return ms.ToArray();
 	}
 

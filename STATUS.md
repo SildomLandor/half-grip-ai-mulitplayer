@@ -1,17 +1,14 @@
 ﻿# Half Grip Multiplayer — Status
 
-**Version:** 0.2.0
-**Phase:** Steam + LAN PvP, dual clients, shared start (co-pilot removed)
+**Version:** 0.8.0  
+**Protocol:** v8  
+**Phase:** Steam + LAN PvP; personal shop/money/loadout; world + FX sync
 
-**Measured 2026-10-26:**
-- Dual clients launched (ClientA PID host-lan :27777, ClientB join-lan)
-- Plugin 0.2.0 loads on both; Auto role host-lan / join-lan OK
-- Race gate Prefix fires (TrackManager countdown gated)
+**0.8.0:**
+- LapState writes into LapManager leaderboard for ghosts
+- TireFx / ShieldFx / CollideImpulse / CutoffState
+- LAN reliable seq/ack (0xFE / 0xFD)
+- Nitro off + remote gun sounds
+- Shop/money/offers never synced (ShopState ignored)
 
-**Features:**
-- Own car per player + ghost hitbox PvP damage
-- Steam lobbies + LAN UDP
-- Shared race start
-- No co-pilot, no split-screen
-
-**Test:** `scripts\launch-dual.ps1`
+**Test:** `scripts\deploy.ps1` then `scripts\launch-dual.ps1`

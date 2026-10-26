@@ -541,8 +541,8 @@ internal sealed class MpSession
 				{
 					var money = r.ReadSingle();
 					var offer = NetProtocol.ReadString(r);
-					if (!IsHost)
-						WorldSync.ApplyShopState(money, offer);
+					// Personal economy: ignore wallets / shop offers from peers (compat with v7).
+					WorldSync.ApplyShopState(money, offer);
 					break;
 				}
 				case MsgType.LapState:
@@ -595,6 +595,33 @@ internal sealed class MpSession
 					var strength = r.ReadSingle();
 					var kind = r.ReadByte();
 					WorldSync.ApplyDentFx(mode, id, point, normal, strength, kind);
+					break;
+				}
+				case MsgType.TireFx:
+				{
+					var wheel = r.ReadByte();
+					var point = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyTireFx(pkt.PeerId, wheel, point);
+					break;
+				}
+				case MsgType.ShieldFx:
+				{
+					var point = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyShieldFx(pkt.PeerId, point);
+					break;
+				}
+				case MsgType.CollideImpulse:
+				{
+					var impulse = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var at = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyCollideImpulse(impulse, at);
+					break;
+				}
+				case MsgType.CutoffState:
+				{
+					var seconds = r.ReadSingle();
+					if (!IsHost)
+						WorldSync.ApplyCutoffState(seconds);
 					break;
 				}
 				default:
