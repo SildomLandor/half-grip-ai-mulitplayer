@@ -69,7 +69,7 @@ internal sealed class MpSession
 			PeerSlots[LocalId] = 0;
 			InLobbyPhase = true;
 			AddChat("* Steam lobby ready — Invite or Shift+Tab");
-			Broadcast(NetProtocol.Hello(LocalName()), true);
+			Broadcast(NetProtocol.Hello(LocalName(), LocalId), true);
 			BroadcastSlotMap();
 		}
 	}
@@ -83,12 +83,19 @@ internal sealed class MpSession
 		{
 			InLobbyPhase = true;
 			AddChat("* Joined Steam lobby");
-			Broadcast(NetProtocol.Hello(LocalName()), true);
+			Broadcast(NetProtocol.Hello(LocalName(), LocalId), true);
 		}
 	}
 
 	public void HostLan(int port)
 	{
+		// Dual-client lab: never let a join-* role steal the host UDP port.
+		var role = Environment.GetEnvironmentVariable("HGMP_ROLE") ?? "";
+		if (role.IndexOf("join", StringComparison.OrdinalIgnoreCase) >= 0)
+		{
+			Plugin.Log.LogWarning($"HostLan ignored — HGMP_ROLE={role}");
+			return;
+		}
 		Leave();
 		_lan = new LanTransport();
 		Transport = _lan;
@@ -98,15 +105,23 @@ internal sealed class MpSession
 			PeerSlots[LocalId] = 0;
 			InLobbyPhase = true;
 			AddChat($"* LAN host on port {port}");
-			Broadcast(NetProtocol.Hello(LocalName()), true);
+			Broadcast(NetProtocol.Hello(LocalName(), LocalId), true);
 			BroadcastSlotMap();
 		}
+		else
+			Plugin.Log.LogWarning($"LAN Host({port}) failed — port busy?");
 	}
 
 	public void JoinLan(string host, int port)
 	{
 		host = (host ?? "").Trim();
 		if (port <= 0) port = NetProtocol.DefaultLanPort;
+		var role = Environment.GetEnvironmentVariable("HGMP_ROLE") ?? "";
+		if (role.IndexOf("host", StringComparison.OrdinalIgnoreCase) >= 0)
+		{
+			Plugin.Log.LogWarning($"JoinLan ignored — HGMP_ROLE={role}");
+			return;
+		}
 		// Idempotent: auto-role / UI / reconnect spam must not tear down a live socket.
 		if (Linked && Kind == TransportKind.Lan && !IsHost
 		    && string.Equals(_lanJoinHost, host, StringComparison.OrdinalIgnoreCase)
@@ -122,7 +137,7 @@ internal sealed class MpSession
 		{
 			InLobbyPhase = true;
 			AddChat($"* LAN join {host}:{port}");
-			Broadcast(NetProtocol.Hello(LocalName()), true);
+			Broadcast(NetProtocol.Hello(LocalName(), LocalId), true);
 		}
 	}
 
@@ -282,35 +297,48 @@ internal sealed class MpSession
 				case MsgType.Hello:
 				{
 					r.ReadByte(); // ver
+					var announcedId = r.ReadUInt64();
 					var name = NetProtocol.ReadString(r);
-					bool first = !Peers.ContainsKey(pkt.PeerId);
-					Peers[pkt.PeerId] = new PeerInfo { Name = name, LastSeen = Time.unscaledTime, Hp = 100f };
+					// LAN: remap temp EP id → guest's self LocalPeerId so SlotMap keys match.
+					ulong peerKey = pkt.PeerId;
 					if (_lan != null && pkt.LanFrom != null)
-						_lan.RememberPeer(pkt.PeerId, pkt.LanFrom);
+					{
+						if (announcedId != 0 && announcedId != pkt.PeerId)
+						{
+							_lan.RemapPeer(pkt.PeerId, announcedId, pkt.LanFrom);
+							peerKey = announcedId;
+						}
+						else
+							_lan.RememberPeer(peerKey, pkt.LanFrom);
+					}
+					bool first = !Peers.ContainsKey(peerKey);
+					Peers[peerKey] = new PeerInfo { Name = name, LastSeen = Time.unscaledTime, Hp = 100f };
 					if (first)
 					{
 						AddChat($"* {name} connected");
-						Plugin.Log.LogInfo($"Hello from {name} peer={pkt.PeerId}");
-						if (_pendingReady.TryGetValue(pkt.PeerId, out var pending))
+						Plugin.Log.LogInfo($"Hello from {name} peer={peerKey}");
+						if (_pendingReady.TryGetValue(peerKey, out var pending) ||
+						    _pendingReady.TryGetValue(pkt.PeerId, out pending))
 						{
-							var pi = Peers[pkt.PeerId];
+							var pi = Peers[peerKey];
 							pi.Ready = pending;
-							Peers[pkt.PeerId] = pi;
+							Peers[peerKey] = pi;
+							_pendingReady.Remove(peerKey);
 							_pendingReady.Remove(pkt.PeerId);
 						}
-						SendTo(pkt.PeerId, NetProtocol.Hello(LocalName()), true);
+						SendTo(peerKey, NetProtocol.Hello(LocalName(), LocalId), true);
 						if (IsHost)
 						{
-							AssignGuestSlot(pkt.PeerId);
+							AssignGuestSlot(peerKey);
 							BroadcastSlotMap();
-							SendHostSceneTo(pkt.PeerId);
+							SendHostSceneTo(peerKey);
 							if (RaceSync.HasSetup)
-								SendTo(pkt.PeerId, NetProtocol.RaceSetup(
+								SendTo(peerKey, NetProtocol.RaceSetup(
 									RaceSync.SpawnSeed, RaceSync.ShortRace, RaceSync.TrackVariantByte,
 									RaceSync.MaxLaps, RaceSync.WeatherName, RaceSync.MapName,
 									RaceSync.SceneName), true);
 							if (RaceStartReceived)
-								SendTo(pkt.PeerId, NetProtocol.RaceStart(Time.unscaledTime), true);
+								SendTo(peerKey, NetProtocol.RaceStart(Time.unscaledTime), true);
 							else if (!InLobbyPhase)
 								TryHostStartRace();
 						}

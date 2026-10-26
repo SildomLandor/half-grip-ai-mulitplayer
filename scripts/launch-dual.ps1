@@ -30,7 +30,17 @@ $env:HGMP_LAN_PORT = "27777"
 Write-Host "Starting ClientA (LAN host)..."
 Start-Process -FilePath "$a\HalfGrip.exe" -WorkingDirectory $a -ArgumentList "-screen-width","1280","-screen-height","720","-screen-fullscreen","0"
 
-Start-Sleep -Seconds 6
+$logA = "$a\BepInEx\LogOutput.log"
+$ready = $false
+for ($i = 0; $i -lt 45; $i++) {
+  Start-Sleep -Seconds 1
+  if (Test-Path $logA) {
+    $txt = Get-Content $logA -Raw -ErrorAction SilentlyContinue
+    if ($txt -match "LAN host") { $ready = $true; break }
+  }
+}
+if (-not $ready) { Write-Warning "ClientA did not log LAN host yet - starting guest anyway" }
+else { Write-Host "ClientA LAN host ready." }
 
 $env:HGMP_NAME = "GuestB"
 $env:HGMP_ROLE = "join-lan"
@@ -41,6 +51,5 @@ Start-Process -FilePath "$b\HalfGrip.exe" -WorkingDirectory $b -ArgumentList "-s
 
 Write-Host ""
 Write-Host "Both clients launching."
-Write-Host "Wait for menus - overlay should show LAN host / LAN join."
-Write-Host "Start the same race on BOTH clients for shared countdown + PvP."
+Write-Host "F6 overlay: Ready in lobby, host Start Race when all ready."
 Write-Host "Logs: clients\ClientA\BepInEx\LogOutput.log and ClientB\..."

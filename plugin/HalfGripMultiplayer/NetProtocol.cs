@@ -29,12 +29,13 @@ internal static class NetProtocol
 	/// <summary>Facepunch SteamNetworking P2P channel for this mod.</summary>
 	public const int SteamChannel = 0;
 
-	public static byte[] Hello(string name)
+	public static byte[] Hello(string name, ulong selfId)
 	{
-		using var ms = new MemoryStream(64);
+		using var ms = new MemoryStream(72);
 		using var w = new BinaryWriter(ms);
 		w.Write((byte)MsgType.Hello);
 		w.Write(Version);
+		w.Write(selfId);
 		WriteString(w, name ?? "Player");
 		return ms.ToArray();
 	}

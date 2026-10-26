@@ -53,8 +53,8 @@ internal sealed class LanTransport : INetTransport
 		Connected = true;
 		Status = $"LAN join {host}:{port}";
 		StartRecv();
-		// Announce so host learns our endpoint / id
-		SendRaw(_hostEp, NetProtocol.Hello("lan-" + LocalPeerId));
+		// Announce so host learns our endpoint / id (selfId inside Hello)
+		SendRaw(_hostEp, NetProtocol.Hello("lan-" + LocalPeerId, LocalPeerId));
 		Plugin.Log.LogInfo(Status);
 		return true;
 	}
@@ -121,6 +121,17 @@ internal sealed class LanTransport : INetTransport
 	public void RememberPeer(ulong id, IPEndPoint ep)
 	{
 		_peers[id] = ep;
+	}
+
+	/// <summary>
+	/// Guest announces its own LocalPeerId in Hello. Remap the temporary EP-based id
+	/// so SlotMap / Pose keys match what the guest thinks it is.
+	/// </summary>
+	public void RemapPeer(ulong fromId, ulong toId, IPEndPoint ep)
+	{
+		if (fromId != toId)
+			_peers.Remove(fromId);
+		_peers[toId] = ep;
 	}
 
 	public ulong RegisterGuest(IPEndPoint ep)

@@ -52,5 +52,5 @@ internal static class PluginInfo
 {
 	public const string GUID = "landor.halfgrip.multiplayer";
 	public const string Name = "Half Grip Multiplayer";
-	public const string Version = "0.4.0";
+	public const string Version = "0.4.1";
 }

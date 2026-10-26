@@ -317,8 +317,14 @@ internal sealed class MpRuntime : MonoBehaviour
 		GUILayout.BeginHorizontal();
 		if (GUILayout.Button("Host LAN", GUILayout.Height(26)))
 		{
-			int.TryParse(LanPortText, out var port);
-			Session.HostLan(port > 0 ? port : NetProtocol.DefaultLanPort);
+			var role = Environment.GetEnvironmentVariable("HGMP_ROLE") ?? "";
+			if (role.IndexOf("join", StringComparison.OrdinalIgnoreCase) >= 0)
+				Session.AddChat("* Host LAN blocked (join role)");
+			else
+			{
+				int.TryParse(LanPortText, out var port);
+				Session.HostLan(port > 0 ? port : NetProtocol.DefaultLanPort);
+			}
 		}
 		if (GUILayout.Button("Join LAN", GUILayout.Height(26)))
 		{
