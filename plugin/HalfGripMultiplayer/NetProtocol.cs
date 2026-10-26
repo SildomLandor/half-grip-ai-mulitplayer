@@ -20,11 +20,12 @@ internal enum MsgType : byte
 	RaceSetup = 12,
 	SlotMap = 13,
 	BotPose = 14,
+	CarLook = 15,
 }
 
 internal static class NetProtocol
 {
-	public const byte Version = 4;
+	public const byte Version = 5;
 	public const int DefaultLanPort = 27777;
 	/// <summary>Facepunch SteamNetworking P2P channel for this mod.</summary>
 	public const int SteamChannel = 0;
@@ -187,6 +188,41 @@ internal static class NetProtocol
 		}
 		return ms.ToArray();
 	}
+
+	public static byte[] CarLook(CarLookData look)
+	{
+		using var ms = new MemoryStream(96);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.CarLook);
+		w.Write(look.SkinIndex);
+		WriteColor(w, look.Color1);
+		WriteColor(w, look.Color2);
+		WriteColor(w, look.Color3);
+		WriteString(w, look.AssetName ?? "");
+		WriteString(w, look.ChassisName ?? "");
+		return ms.ToArray();
+	}
+
+	public static CarLookData ReadCarLook(BinaryReader r)
+	{
+		return new CarLookData
+		{
+			SkinIndex = r.ReadByte(),
+			Color1 = ReadColor(r),
+			Color2 = ReadColor(r),
+			Color3 = ReadColor(r),
+			AssetName = ReadString(r),
+			ChassisName = ReadString(r),
+		};
+	}
+
+	private static void WriteColor(BinaryWriter w, Color c)
+	{
+		w.Write(c.r); w.Write(c.g); w.Write(c.b);
+	}
+
+	private static Color ReadColor(BinaryReader r) =>
+		new(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), 1f);
 
 	public static void WriteString(BinaryWriter w, string s)
 	{

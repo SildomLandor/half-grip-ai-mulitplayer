@@ -42,7 +42,7 @@ public sealed class Plugin : BaseUnityPlugin
 		DontDestroyOnLoad(go);
 		go.AddComponent<MpRuntime>();
 
-		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — lobby Ready, grid slots, weather/laps/bots sync.");
+		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — car look sync, lobby Ready, weather/bots.");
 	}
 
 	private void OnDestroy() => _harmony?.UnpatchSelf();
@@ -52,5 +52,5 @@ internal static class PluginInfo
 {
 	public const string GUID = "landor.halfgrip.multiplayer";
 	public const string Name = "Half Grip Multiplayer";
-	public const string Version = "0.4.1";
+	public const string Version = "0.5.0";
 }

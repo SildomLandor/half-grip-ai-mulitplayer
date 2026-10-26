@@ -327,6 +327,7 @@ internal sealed class MpSession
 							_pendingReady.Remove(pkt.PeerId);
 						}
 						SendTo(peerKey, NetProtocol.Hello(LocalName(), LocalId), true);
+						MpRuntime.Instance?.BroadcastLocalCarLook(force: true);
 						if (IsHost)
 						{
 							AssignGuestSlot(peerKey);
@@ -479,6 +480,12 @@ internal sealed class MpSession
 						if (!IsHost)
 							RaceSync.ApplyBotPose(tm, index, pos, rot, speed, hp);
 					}
+					break;
+				}
+				case MsgType.CarLook:
+				{
+					var look = NetProtocol.ReadCarLook(r);
+					MpRuntime.Instance?.ApplyRemoteCarLook(pkt.PeerId, look);
 					break;
 				}
 				default:

@@ -21,6 +21,7 @@ internal sealed class MpRuntime : MonoBehaviour
 	private readonly Dictionary<ulong, GhostCar> _ghosts = new();
 	private float _nextPose;
 	private float _nextBotPose;
+	private float _nextCarLook;
 	private float _lastDamageSent;
 	private string? _loadingHostScene;
 	private GUIStyle? _box;
@@ -71,6 +72,7 @@ internal sealed class MpRuntime : MonoBehaviour
 			// Guests already received RaceSetup; re-apply weather after scene objects exist.
 			if (RaceSync.HasSetup)
 				RaceSync.ApplyRunContext();
+			CarLookSync.MarkDirty();
 		}
 
 		if (!string.IsNullOrEmpty(_loadingHostScene) &&
@@ -87,6 +89,7 @@ internal sealed class MpRuntime : MonoBehaviour
 		RaceSync.PlaceLocalPlayer(tm, Session.LocalSlot);
 		if (!Session.IsHost)
 			RaceSync.FreezeGuestBots(tm);
+		BroadcastLocalCarLook(force: true);
 		Plugin.Log.LogInfo($"Track ready: localSlot={Session.LocalSlot} peers={Session.Peers.Count}");
 	}
 
@@ -135,6 +138,7 @@ internal sealed class MpRuntime : MonoBehaviour
 		if (!Session.Linked) return;
 		SendLocalPose();
 		SendBotPoses();
+		SendLocalCarLook();
 		foreach (var g in _ghosts.Values) g?.Tick(Time.deltaTime);
 	}
 
@@ -204,6 +208,32 @@ internal sealed class MpRuntime : MonoBehaviour
 		Session.Broadcast(NetProtocol.BotPose(bots), false);
 	}
 
+	private void SendLocalCarLook()
+	{
+		if (Time.unscaledTime < _nextCarLook) return;
+		_nextCarLook = Time.unscaledTime + 1f; // 1 Hz + dirty from ApplySkin patches
+		if (!CarLookSync.NeedsSend(out var look)) return;
+		Session.Broadcast(NetProtocol.CarLook(look), true);
+		CarLookSync.RememberSent(look);
+	}
+
+	/// <summary>Force a CarLook packet (on Hello / track ready).</summary>
+	public void BroadcastLocalCarLook(bool force = true)
+	{
+		if (!Session.Linked) return;
+		if (force) CarLookSync.MarkDirty();
+		if (!CarLookSync.TryCaptureLocal(out var look)) return;
+		Session.Broadcast(NetProtocol.CarLook(look), true);
+		CarLookSync.RememberSent(look);
+	}
+
+	public void ApplyRemoteCarLook(ulong from, CarLookData look)
+	{
+		CarLookSync.StorePending(from, look);
+		if (_ghosts.TryGetValue(from, out var ghost) && ghost != null)
+			ghost.ApplyLook(look);
+	}
+
 	public void ApplyRemotePose(ulong from, ulong ownerId, Vector3 pos, Quaternion rot, float speed, float hp, float remoteTime)
 	{
 		_ = ownerId;
@@ -218,6 +248,8 @@ internal sealed class MpRuntime : MonoBehaviour
 			int slot = Session.SlotFor(from);
 			ghost = GhostCar.Spawn(from, name, Plugin.Instance.GhostTransparent.Value, slot);
 			_ghosts[from] = ghost;
+			if (CarLookSync.TryGetPending(from, out var pending))
+				ghost.ApplyLook(pending);
 		}
 		else if (ghost.PreferredSlot < 0)
 			ghost.PreferredSlot = Session.SlotFor(from);

@@ -16,6 +16,7 @@ internal sealed class GhostCar
 	public float Hp { get; private set; } = 100f;
 	public EnemyController? BoundEnemy { get; private set; }
 	public int PreferredSlot { get; set; } = -1;
+	public CarLookData? PendingLook { get; set; }
 
 	private Vector3 _targetPos;
 	private Quaternion _targetRot = Quaternion.identity;
@@ -149,7 +150,21 @@ internal sealed class GhostCar
 			enemy.carController.enabled = false;
 
 		Plugin.Log.LogInfo($"Remote peer {peerId} claimed bot '{enemy.name}' for grid slot {PreferredSlot}");
+		if (PendingLook.HasValue)
+			ApplyLook(PendingLook.Value);
+		else if (CarLookSync.TryGetPending(peerId, out var pending))
+			ApplyLook(pending);
 		return true;
+	}
+
+	public void ApplyLook(CarLookData look)
+	{
+		PendingLook = look;
+		if (Hitbox != null)
+			CarLookSync.StorePending(Hitbox.PeerId, look);
+		if (BoundEnemy == null) return;
+		var csc = BoundEnemy.GetComponent<CarSkinController>();
+		CarLookSync.ApplyToController(csc, look);
 	}
 
 	private void ReleaseEnemy()

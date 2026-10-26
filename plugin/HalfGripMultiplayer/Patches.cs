@@ -273,6 +273,42 @@ internal static class RaceStartPatches
 	}
 }
 
+/// <summary>Paint / chassis change → push CarLook to peers.</summary>
+[HarmonyPatch(typeof(CarSkinController), nameof(CarSkinController.ApplySkin))]
+internal static class CarSkinApplyPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(CarSkinController __instance)
+	{
+		if (__instance == null || !__instance.isPlayer) return;
+		CarLookSync.MarkDirty();
+		MpRuntime.Instance?.BroadcastLocalCarLook(force: true);
+	}
+}
+
+[HarmonyPatch(typeof(CarSkinController), nameof(CarSkinController.Refit))]
+internal static class CarSkinRefitPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(CarSkinController __instance)
+	{
+		if (__instance == null || !__instance.isPlayer) return;
+		CarLookSync.MarkDirty();
+		MpRuntime.Instance?.BroadcastLocalCarLook(force: true);
+	}
+}
+
+[HarmonyPatch(typeof(PlayerCarSkin), nameof(PlayerCarSkin.Wear))]
+internal static class PlayerPaintWearPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix()
+	{
+		CarLookSync.MarkDirty();
+		MpRuntime.Instance?.BroadcastLocalCarLook(force: true);
+	}
+}
+
 /// <summary>Broadcast wreck when local player HP hits 0.</summary>
 [HarmonyPatch(typeof(CarLink), nameof(CarLink.TakeCrashDamage))]
 internal static class DamageBroadcastPatches

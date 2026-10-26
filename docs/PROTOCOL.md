@@ -1,4 +1,4 @@
-﻿# Half Grip Multiplayer — Wire Protocol (v4)
+﻿# Half Grip Multiplayer — Wire Protocol (v5)
 
 Private Steam friends/private lobbies or LAN UDP `:27777`. Host = lobby owner / LAN host.
 
@@ -27,8 +27,13 @@ First byte = `MsgType`, then payload (`BinaryWriter` / little-endian). Strings: 
 | 12 | RaceSetup | int spawnSeed; byte shortRace; byte trackVariant; int maxLaps; string weather; string map; string scene |
 | 13 | SlotMap | byte count; repeated (ulong peerId, byte slot) |
 | 14 | BotPose | byte count; repeated (byte index; float3; float4; float speed; float hp) |
+| 15 | CarLook | byte skinIndex; float3×3 colours; string assetName; string chassisName |
 
-**Version byte** in Hello = `4`.
+**Version byte** in Hello = `5`.
+
+## Car look
+
+Each peer broadcasts `CarLook` on Hello, track ready, paint/`ApplySkin`/`Refit`, and at ~1 Hz when dirty. Guests apply it to the claimed enemy `CarSkinController` (`skinIndex` + paint; optional chassis/`CarSkin` asset by name).
 
 ## Lobby flow
 

@@ -201,3 +201,10 @@ No Harmony / plugin Fatal / Exception lines. Benign BepInEx Unity log writer err
 - BotPose host>guest for unclaimed AI; guests freeze local AI.
 - Lobby: sync SCENE_UI_* to guests; Ready button; MenuManager.StartRace gated until AllPeersReady; only host starts.
 - Protocol Version = 4. MsgType RaceSetup/SlotMap/BotPose.
+
+## 0.5.0 — CarLook sync (2026-10-26)
+
+- MsgType.CarLook: skinIndex + 3 paint colours + CarSkin asset name + ChassisUpgrade name.
+- Applied to remote ghost's claimed EnemyController CarSkinController via ApplySkin.
+- Sent on Hello, track ready, ApplySkin/Refit/PlayerCarSkin.Wear, and 1 Hz when dirty.
+- Protocol Version = 5.
