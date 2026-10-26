@@ -429,6 +429,7 @@ internal sealed class MpSession
 					LocalReady = false;
 					InLobbyPhase = true;
 					AddChat("* Race aborted");
+					WorldSync.RestoreMenuCursor();
 					if (!IsHost && !GameManager.raceOver)
 					{
 						try
@@ -456,6 +457,7 @@ internal sealed class MpSession
 							pi.Ready = false;
 							Peers[id] = pi;
 						}
+						WorldSync.RestoreMenuCursor();
 					}
 					MpRuntime.Instance?.OnHostScene(scene);
 					break;

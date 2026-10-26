@@ -45,7 +45,7 @@ public sealed class Plugin : BaseUnityPlugin
 		DontDestroyOnLoad(go);
 		go.AddComponent<MpRuntime>();
 
-		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — lap counter fix.");
+		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — loadout/laps/cursor/gunfx.");
 	}
 
 	private void OnDestroy() => _harmony?.UnpatchSelf();
@@ -55,5 +55,5 @@ internal static class PluginInfo
 {
 	public const string GUID = "landor.halfgrip.multiplayer";
 	public const string Name = "Half Grip Multiplayer";
-	public const string Version = "0.9.3";
+	public const string Version = "0.9.4";
 }

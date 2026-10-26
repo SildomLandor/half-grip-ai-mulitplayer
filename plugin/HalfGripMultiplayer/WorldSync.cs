@@ -559,14 +559,26 @@ internal static class WorldSync
 		}
 	}
 
-	/// <summary>Re-fit local PlayerLoadout onto LoadoutSpawner after a hard scene sync.</summary>
+	/// <summary>
+	/// Guest skips MenuManager.StartRace, so PlayerLoadout is empty.
+	/// Restore THIS client's equipped gear from GameManager / SaveData (last race), then fit it.
+	/// </summary>
 	public static void EnsureLocalLoadoutFitted()
 	{
 		try
 		{
-			if (!PlayerLoadout.Known || PlayerLoadout.Equipped.Count == 0) return;
+			RestoreLocalLoadoutFromSave();
+			if (!PlayerLoadout.Known || PlayerLoadout.Equipped.Count == 0)
+			{
+				Plugin.Log.LogWarning("Local loadout empty after restore — no gear to fit");
+				return;
+			}
 			var spawner = UnityEngine.Object.FindFirstObjectByType<LoadoutSpawner>();
-			if (spawner == null) return;
+			if (spawner == null)
+			{
+				Plugin.Log.LogWarning("LoadoutSpawner missing on track");
+				return;
+			}
 			foreach (var up in PlayerLoadout.Equipped)
 			{
 				if (up == null) continue;
@@ -578,12 +590,64 @@ internal static class WorldSync
 				if (!already)
 					spawner.Swap(null, up);
 			}
-			Plugin.Log.LogInfo($"Local loadout refit: {PlayerLoadout.Equipped.Count} upgrades");
+			Plugin.Log.LogInfo($"Local loadout fitted: {PlayerLoadout.Equipped.Count} upgrades");
 		}
 		catch (Exception ex)
 		{
 			Plugin.Log.LogWarning($"EnsureLocalLoadoutFitted: {ex.Message}");
 		}
+	}
+
+	public static void RestoreLocalLoadoutFromSave()
+	{
+		try
+		{
+			// Always prefer THIS client's save — LoadoutSpawner may have already Set() an editor stub.
+			Dictionary<string, UpgradeComponent>? fromSave = null;
+			try
+			{
+				fromSave = UpgradeRepository.LoadEquipped(Array.Empty<InventorySlot>());
+			}
+			catch (Exception ex)
+			{
+				Plugin.Log.LogWarning($"UpgradeRepository.LoadEquipped: {ex.Message}");
+			}
+
+			if (fromSave == null || fromSave.Count == 0)
+			{
+				if (GameManager.equippedUpgrades != null && GameManager.equippedUpgrades.Count > 0)
+					fromSave = GameManager.equippedUpgrades;
+			}
+
+			if (fromSave == null || fromSave.Count == 0)
+			{
+				Plugin.Log.LogWarning("No equipped upgrades in save — client will have no gear");
+				return;
+			}
+
+			GameManager.equippedUpgrades = fromSave;
+			PlayerStats.ResetAllUpgrades();
+			foreach (var kv in fromSave)
+				kv.Value?.Apply();
+			PlayerLoadout.Set(fromSave.Values);
+			Plugin.Log.LogInfo($"Restored local loadout from save ({fromSave.Count} items)");
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"RestoreLocalLoadoutFromSave: {ex.Message}");
+		}
+	}
+
+	public static void RestoreMenuCursor()
+	{
+		try
+		{
+			Cursor.lockState = CursorLockMode.Confined;
+			Cursor.visible = true;
+			InteriorMath.Paused = false;
+			TimeScale.ResetAll();
+		}
+		catch { /* */ }
 	}
 
 	public static void PulseCutoffSync(MpSession session)

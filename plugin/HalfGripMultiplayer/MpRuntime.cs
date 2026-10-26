@@ -74,9 +74,14 @@ internal sealed class MpRuntime : MonoBehaviour
 		{
 			Session.InLobbyPhase = true;
 			Session.RaceStartReceived = false;
+			WorldSync.RestoreMenuCursor();
 		}
 
-		if (!Session.Linked) return;
+		if (!Session.Linked)
+		{
+			if (isUi) WorldSync.RestoreMenuCursor();
+			return;
+		}
 
 		if (Session.IsHost && (isTrack || isUi))
 			Session.BroadcastHostScene(scene.name);
@@ -87,8 +92,13 @@ internal sealed class MpRuntime : MonoBehaviour
 			// Guests already received RaceSetup; re-apply weather after scene objects exist.
 			if (RaceSync.HasSetup)
 				RaceSync.ApplyRunContext();
+			// Before LoadoutSpawner logic finishes late — restore gear from this client's save.
+			WorldSync.RestoreLocalLoadoutFromSave();
 			CarLookSync.MarkDirty();
 		}
+
+		if (isUi)
+			WorldSync.RestoreMenuCursor();
 
 		if (!string.IsNullOrEmpty(_loadingHostScene) &&
 		    string.Equals(scene.name, _loadingHostScene, StringComparison.OrdinalIgnoreCase))
@@ -99,16 +109,18 @@ internal sealed class MpRuntime : MonoBehaviour
 	public void OnTrackReady(TrackManager tm)
 	{
 		if (tm == null || !Session.Linked) return;
+		WorldSync.RestoreLocalLoadoutFromSave();
 		RaceSync.ApplyLapsToTrack(tm);
 		RaceSync.ApplyRunContext();
 		RaceSync.StripBotsIfNeeded(tm);
 		RaceSync.PlaceLocalPlayer(tm, Session.LocalSlot);
 		if (!Session.IsHost && !RaceSync.NoBots)
 			RaceSync.FreezeGuestBots(tm);
+		// Fit after place — LoadoutSpawner may have Awoke with empty PlayerLoadout.
 		WorldSync.EnsureLocalLoadoutFitted();
 		BroadcastLocalCarLook(force: true);
 		WorldSync.ForceBroadcastLoadout(Session);
-		Plugin.Log.LogInfo($"Track ready: localSlot={Session.LocalSlot} peers={Session.Peers.Count} free={RaceSync.FreePlay} noBots={RaceSync.NoBots}");
+		Plugin.Log.LogInfo($"Track ready: localSlot={Session.LocalSlot} peers={Session.Peers.Count} free={RaceSync.FreePlay} noBots={RaceSync.NoBots} loadout={(PlayerLoadout.Known ? PlayerLoadout.Equipped.Count : 0)}");
 	}
 
 	/// <summary>Guest: jump onto the host's track or lobby UI.</summary>

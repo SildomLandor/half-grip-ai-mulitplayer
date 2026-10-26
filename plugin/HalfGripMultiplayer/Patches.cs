@@ -192,6 +192,7 @@ internal static class SpawnEnemiesSeedPatches
 /// LapManager only registers cars when leaderboard is empty. If a ghost registered first,
 /// the player never gets in → GetCarProjectedPoint throws → no laps for anyone.
 /// Always ensure the local player (and live bots) are on the board.
+/// Also swallow GetCarProjectedPoint failures so one bad car cannot stop all lap ticks.
 /// </summary>
 [HarmonyPatch(typeof(LapManager), "Update")]
 internal static class LapManagerEnsureRegisteredPatches
@@ -222,6 +223,36 @@ internal static class LapManagerEnsureRegisteredPatches
 				catch { /* */ }
 			}
 		}
+	}
+}
+
+[HarmonyPatch(typeof(LapManager), "GetCarProjectedPoint")]
+internal static class LapManagerProjectedPointGuardPatches
+{
+	[HarmonyPrefix]
+	private static bool Prefix(LapManager __instance, GameObject car)
+	{
+		if (__instance?.leaderboard == null || car == null) return false;
+		if (!__instance.leaderboard.ContainsKey(car))
+		{
+			try { __instance.RegisterCar(car); }
+			catch { return false; }
+			if (!__instance.leaderboard.ContainsKey(car)) return false;
+		}
+		return true;
+	}
+}
+
+/// <summary>LoadoutSpawner Awake runs before our sceneLoaded restore — force save gear after it.</summary>
+[HarmonyPatch(typeof(LoadoutSpawner), "Awake")]
+internal static class LoadoutSpawnerAwakeMpPatches
+{
+	[HarmonyPrefix]
+	private static void Prefix()
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		WorldSync.RestoreLocalLoadoutFromSave();
 	}
 }
 
@@ -423,7 +454,7 @@ internal static class HazardsSeedPatches
 
 // RaceEnd broadcast lives on TrackManager.EndRace (EndRaceSyncPatches) — more reliable.
 
-/// <summary>Gun muzzle/tracer FX for remotes.</summary>
+/// <summary>Gun muzzle/tracer FX for remotes (both host→guest and guest→host).</summary>
 [HarmonyPatch(typeof(Gun), "FireEffects")]
 internal static class GunFireFxPatches
 {
@@ -433,10 +464,13 @@ internal static class GunFireFxPatches
 		var rt = MpRuntime.Instance;
 		if (rt == null || !rt.Session.Linked) return;
 		if (__instance == null) return;
+		// Skip guns sitting on a remote ghost (those are visual-only).
+		if (__instance.GetComponentInParent<RemotePlayerHitbox>() != null) return;
 		var cc = __instance.carLink != null ? __instance.carLink.cc : null;
 		if (cc == null || !cc.isPlayer) return;
 		var origin = __instance.firePoint != null ? __instance.firePoint.position : cc.transform.position;
-		rt.Session.Broadcast(NetProtocol.GunFx(origin, targetPoint), false);
+		// Reliable so guest shots are not dropped on LAN.
+		rt.Session.Broadcast(NetProtocol.GunFx(origin, targetPoint), true);
 	}
 }
 

@@ -261,10 +261,37 @@ internal static class RaceSync
 			// playerStart already placed by vanilla for slot 0
 		}
 
-		// Match SpawnEnemies heading: layout uses +90° yaw then LayoutHeading (mirror/reverse).
-		var rot = LayoutHeading(Quaternion.Euler(0f, 90f, 0f));
+		// Use the grid marker's own facing (player spawn pads are authored correctly).
+		// Forced +90° made cars drive sideways → LapCounter treated motion as backwards → no laps.
+		var rot = LayoutHeading(marker.rotation);
 		TeleportCar(car, pos, rot);
+		RefreshLapIndexAfterTeleport(tm, car.gameObject);
 		Plugin.Log.LogInfo($"Local player placed on grid slot {slot} @ {pos} rotY={rot.eulerAngles.y:0}");
+	}
+
+	/// <summary>After a teleport, reset LapManager's closest-point cache so the next wrap is valid.</summary>
+	public static void RefreshLapIndexAfterTeleport(TrackManager tm, GameObject carGo)
+	{
+		if (tm?.lapManager == null || carGo == null) return;
+		try
+		{
+			var lm = tm.lapManager;
+			if (lm.trackLine == null || lm.trackLine.sampledPoints == null || lm.trackLine.sampledPoints.Count == 0)
+				return;
+			var field = AccessTools.Field(typeof(LapManager), "carLastClosestIndex");
+			if (field?.GetValue(lm) is Dictionary<GameObject, int> map)
+			{
+				int idx = lm.trackLine.GetClosestPointIndex(carGo.transform.position);
+				map[carGo] = idx;
+			}
+			// Re-register if missing so GetCarProjectedPoint never KeyNotFound.
+			if (lm.leaderboard != null && !lm.leaderboard.ContainsKey(carGo))
+				lm.RegisterCar(carGo);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"RefreshLapIndex: {ex.Message}");
+		}
 	}
 
 	private static Quaternion LayoutHeading(Quaternion drawn)
