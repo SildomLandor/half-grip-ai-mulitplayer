@@ -46,7 +46,7 @@ internal enum MsgType : byte
 
 internal static class NetProtocol
 {
-	public const byte Version = 9;
+	public const byte Version = 10;
 	public const int DefaultLanPort = 27777;
 	public const int SteamChannel = 0;
 
@@ -114,13 +114,14 @@ internal static class NetProtocol
 		return ms.ToArray();
 	}
 
-	public static byte[] Damage(float amount, Vector3 point)
+	public static byte[] Damage(float amount, Vector3 point, ulong targetPeer = 0)
 	{
-		using var ms = new MemoryStream(20);
+		using var ms = new MemoryStream(28);
 		using var w = new BinaryWriter(ms);
 		w.Write((byte)MsgType.Damage);
 		w.Write(amount);
 		w.Write(point.x); w.Write(point.y); w.Write(point.z);
+		w.Write(targetPeer); // 0 = legacy "receiver is target"
 		return ms.ToArray();
 	}
 
@@ -159,7 +160,9 @@ internal static class NetProtocol
 		string objectiveTarget,
 		string musicName,
 		float ceasefireSeconds,
-		int selectedNodeIndex)
+		int selectedNodeIndex,
+		bool freePlay = false,
+		bool noBots = false)
 	{
 		using var ms = new MemoryStream(384);
 		using var w = new BinaryWriter(ms);
@@ -177,6 +180,8 @@ internal static class NetProtocol
 		WriteString(w, musicName ?? "");
 		w.Write(ceasefireSeconds);
 		w.Write(selectedNodeIndex);
+		w.Write((byte)(freePlay ? 1 : 0));
+		w.Write((byte)(noBots ? 1 : 0));
 		return ms.ToArray();
 	}
 
@@ -381,12 +386,13 @@ internal static class NetProtocol
 		return ms.ToArray();
 	}
 
-	/// <summary>Impulse the receiver should apply to their local player rigidbody.</summary>
-	public static byte[] CollideImpulse(Vector3 impulse, Vector3 atPoint)
+	/// <summary>Impulse the named peer should apply to their local player rigidbody.</summary>
+	public static byte[] CollideImpulse(ulong targetPeer, Vector3 impulse, Vector3 atPoint)
 	{
-		using var ms = new MemoryStream(28);
+		using var ms = new MemoryStream(36);
 		using var w = new BinaryWriter(ms);
 		w.Write((byte)MsgType.CollideImpulse);
+		w.Write(targetPeer);
 		w.Write(impulse.x); w.Write(impulse.y); w.Write(impulse.z);
 		w.Write(atPoint.x); w.Write(atPoint.y); w.Write(atPoint.z);
 		return ms.ToArray();

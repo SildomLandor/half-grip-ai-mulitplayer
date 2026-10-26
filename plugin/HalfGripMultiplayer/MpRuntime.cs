@@ -29,6 +29,7 @@ internal sealed class MpRuntime : MonoBehaviour
 	private GUIStyle? _title;
 	private GUIStyle? _hint;
 	private Vector2 _chatScroll;
+	private Vector2 _mapScroll;
 	private float _hintUntil;
 	private bool _unfocusGui;
 
@@ -100,12 +101,14 @@ internal sealed class MpRuntime : MonoBehaviour
 		if (tm == null || !Session.Linked) return;
 		RaceSync.ApplyLapsToTrack(tm);
 		RaceSync.ApplyRunContext();
+		RaceSync.StripBotsIfNeeded(tm);
 		RaceSync.PlaceLocalPlayer(tm, Session.LocalSlot);
-		if (!Session.IsHost)
+		if (!Session.IsHost && !RaceSync.NoBots)
 			RaceSync.FreezeGuestBots(tm);
+		WorldSync.EnsureLocalLoadoutFitted();
 		BroadcastLocalCarLook(force: true);
 		WorldSync.ForceBroadcastLoadout(Session);
-		Plugin.Log.LogInfo($"Track ready: localSlot={Session.LocalSlot} peers={Session.Peers.Count}");
+		Plugin.Log.LogInfo($"Track ready: localSlot={Session.LocalSlot} peers={Session.Peers.Count} free={RaceSync.FreePlay} noBots={RaceSync.NoBots}");
 	}
 
 	/// <summary>Guest: jump onto the host's track or lobby UI.</summary>
@@ -286,7 +289,8 @@ internal sealed class MpRuntime : MonoBehaviour
 		if (amount <= 0f) return;
 		if (_lastDamageSent.TryGetValue(peerId, out var last) && Time.unscaledTime - last < 0.03f) return;
 		_lastDamageSent[peerId] = Time.unscaledTime;
-		Session.SendTo(peerId, NetProtocol.Damage(amount, point), true);
+		// Broadcast with targetPeer — more reliable than SendTo alone on LAN remap.
+		Session.Broadcast(NetProtocol.Damage(amount, point, peerId), true);
 		Session.AddChat($"* Hit {peerId} for {amount:0}");
 	}
 
@@ -356,8 +360,8 @@ internal sealed class MpRuntime : MonoBehaviour
 			return;
 		}
 
-		const float w = 400f;
-		var rect = new Rect(12f, 12f, w, 520f);
+		const float w = 420f;
+		var rect = new Rect(12f, 12f, w, Mathf.Min(640f, Screen.height - 24f));
 		GUI.Box(rect, GUIContent.none, _box);
 		GUILayout.BeginArea(new Rect(rect.x + 10, rect.y + 8, w - 20, rect.height - 16));
 
@@ -443,8 +447,35 @@ internal sealed class MpRuntime : MonoBehaviour
 		}
 
 		GUILayout.Space(4);
+		GUILayout.Label("— Free play / sandbox —", _label);
+		RaceSync.FreePlay = GUILayout.Toggle(RaceSync.FreePlay, "Free play (no auto-finish)");
+		RaceSync.NoBots = GUILayout.Toggle(RaceSync.NoBots, "No bots (humans only)");
+		if (Session.IsHost || !Session.Linked)
+		{
+			if (GUILayout.Button("Open Playground", GUILayout.Height(24)))
+				HostOpenPlayground();
+			_mapScroll = GUILayout.BeginScrollView(_mapScroll, GUILayout.Height(110));
+			var cfg = RunConfig.Instance;
+			if (cfg?.maps != null)
+			{
+				foreach (var map in cfg.maps)
+				{
+					if (map == null) continue;
+					string label = !string.IsNullOrEmpty(map.displayName) ? map.displayName : map.name;
+					if (GUILayout.Button($"{label}  [#{map.trackIndex}]", GUILayout.Height(22)))
+						HostLoadMap(map);
+				}
+			}
+			else
+				GUILayout.Label("(RunConfig maps unavailable — open a run once)", _label);
+			GUILayout.EndScrollView();
+		}
+		else
+			GUILayout.Label("Guest: host picks the map.", _label);
+
+		GUILayout.Space(4);
 		GUILayout.Label("Chat", _label);
-		_chatScroll = GUILayout.BeginScrollView(_chatScroll, GUILayout.Height(100));
+		_chatScroll = GUILayout.BeginScrollView(_chatScroll, GUILayout.Height(80));
 		foreach (var line in Session.ChatLog) GUILayout.Label(line, _label);
 		GUILayout.EndScrollView();
 		GUILayout.BeginHorizontal();
@@ -457,9 +488,55 @@ internal sealed class MpRuntime : MonoBehaviour
 		GUILayout.EndHorizontal();
 
 		GUILayout.Space(4);
-		GUILayout.Label("Host opens new/continue run → guests join lobby. All Ready → host Start Race.", _label);
+		GUILayout.Label("Host: Free play + map button, or normal run → Ready → Start Race.", _label);
 		GUILayout.Label($"Hotkeys: {Plugin.Instance.ToggleUiKey.Value}/Esc hide · F7 Steam Host · F8 Leave", _label);
 		GUILayout.EndArea();
+	}
+
+	private void HostOpenPlayground()
+	{
+		RaceSync.FreePlay = true;
+		RaceSync.NoBots = true;
+		try
+		{
+			if (PlayerLoadout.Known)
+			{
+				foreach (var up in PlayerLoadout.Equipped)
+					up?.Apply();
+			}
+		}
+		catch { /* */ }
+		Playground.Open();
+		if (Session.Linked && Session.IsHost)
+		{
+			Session.BroadcastHostScene(Playground.SCENE);
+			Session.BroadcastRaceSetup();
+		}
+		Session.AddChat("* Playground (free / no bots)");
+	}
+
+	private void HostLoadMap(MapDefinition map)
+	{
+		if (map == null) return;
+		RaceSync.FreePlay = true;
+		try
+		{
+			if (SceneLoader.Instance == null)
+			{
+				Session.AddChat("* SceneLoader missing");
+				return;
+			}
+			Session.InLobbyPhase = false;
+			Session.BroadcastRaceSetup();
+			SceneLoader.Instance.LoadTrackScene(map.trackIndex, 1f);
+			Session.AddChat($"* Loading map {map.displayName ?? map.name}");
+			Plugin.Log.LogInfo($"Host free-play map trackIndex={map.trackIndex} noBots={RaceSync.NoBots}");
+		}
+		catch (Exception ex)
+		{
+			Session.AddChat($"* Map load failed: {ex.Message}");
+			Plugin.Log.LogWarning($"HostLoadMap: {ex.Message}");
+		}
 	}
 
 	private void EnsureStyles()

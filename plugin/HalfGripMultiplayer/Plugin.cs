@@ -45,7 +45,7 @@ public sealed class Plugin : BaseUnityPlugin
 		DontDestroyOnLoad(go);
 		go.AddComponent<MpRuntime>();
 
-		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — menu hidden by default (F6).");
+		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — race/PvP/free-play fixes.");
 	}
 
 	private void OnDestroy() => _harmony?.UnpatchSelf();
@@ -55,5 +55,5 @@ internal static class PluginInfo
 {
 	public const string GUID = "landor.halfgrip.multiplayer";
 	public const string Name = "Half Grip Multiplayer";
-	public const string Version = "0.9.1";
+	public const string Version = "0.9.2";
 }

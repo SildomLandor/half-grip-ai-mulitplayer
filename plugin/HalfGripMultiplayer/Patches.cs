@@ -6,7 +6,7 @@ using UnityEngine.SceneManagement;
 
 namespace HalfGripMultiplayer;
 
-/// <summary>When a gun ray hits a remote ghost hitbox, deal networked PvP damage.</summary>
+/// <summary>Gun hits on remote ghosts → networked PvP (body AND tire rays).</summary>
 [HarmonyPatch(typeof(Gun))]
 internal static class GunPvPPatches
 {
@@ -15,25 +15,47 @@ internal static class GunPvPPatches
 	private static void HandleEnemyCollision_Post(Gun __instance, RaycastHit hit, Ray shotRay)
 	{
 		_ = shotRay;
-		TryHitRemote(__instance, hit);
+		TryHitRemote(__instance, hit.collider, hit.point);
 	}
 
-	private static void TryHitRemote(Gun gun, RaycastHit hit)
+	/// <summary>Tire hits skip HandleEnemyCollision — catch them here.</summary>
+	[HarmonyPrefix]
+	[HarmonyPatch("ShootSeen")]
+	private static bool ShootSeen_Prefix(Gun __instance, CarTireDamage seen, Ray ray, float distance, Vector3 normal, bool tire)
+	{
+		_ = distance;
+		_ = normal;
+		_ = tire;
+		if (seen?.Enemy == null) return true;
+		var box = seen.Enemy.GetComponent<RemotePlayerHitbox>();
+		if (box == null) return true;
+		TryHitRemote(__instance, seen.Enemy.transform, ray.GetPoint(distance));
+		return false; // do not TakeDamage the invincible ghost body
+	}
+
+	private static void TryHitRemote(Gun gun, Component? hitFrom, Vector3 point)
 	{
 		var rt = MpRuntime.Instance;
 		if (rt == null || !rt.Session.Linked) return;
-		var box = hit.collider.GetComponentInParent<RemotePlayerHitbox>();
+		if (hitFrom == null) return;
+		var box = hitFrom.GetComponentInParent<RemotePlayerHitbox>()
+		          ?? hitFrom.GetComponent<RemotePlayerHitbox>();
 		if (box == null) return;
 
 		float dmg = 50f;
 		try
 		{
-			var field = AccessTools.Field(typeof(Gun), "damage");
-			if (field != null) dmg = (float)field.GetValue(gun);
+			var prop = AccessTools.Property(typeof(Gun), "Damage");
+			if (prop != null) dmg = (float)prop.GetValue(gun)!;
+			else
+			{
+				var field = AccessTools.Field(typeof(Gun), "damage");
+				if (field != null) dmg = (float)field.GetValue(gun)!;
+			}
 		}
 		catch { /* keep default */ }
 		dmg *= box.DamageMultiplier;
-		rt.DealDamageToPeer(box.PeerId, dmg, hit.point);
+		rt.DealDamageToPeer(box.PeerId, dmg, point);
 	}
 }
 
@@ -361,20 +383,7 @@ internal static class HazardsSeedPatches
 	}
 }
 
-/// <summary>Host finishes → everyone ends together.</summary>
-[HarmonyPatch(typeof(GameManager), nameof(GameManager.RaceFinished))]
-internal static class RaceFinishedSyncPatches
-{
-	[HarmonyPrefix]
-	private static void Prefix(int position)
-	{
-		var rt = MpRuntime.Instance;
-		if (rt == null || !rt.Session.Linked) return;
-		if (!rt.Session.IsHost || WorldSync.SuppressLocalRaceEndBroadcast) return;
-		var last = RaceTracker.Last;
-		WorldSync.BroadcastRaceEnd(rt.Session, position, last.survived, last.objectiveMet, !last.survived, RaceTracker.Quit);
-	}
-}
+// RaceEnd broadcast lives on TrackManager.EndRace (EndRaceSyncPatches) — more reliable.
 
 /// <summary>Gun muzzle/tracer FX for remotes.</summary>
 [HarmonyPatch(typeof(Gun), "FireEffects")]
@@ -750,20 +759,24 @@ internal static class TimeScaleHoldMpPatches
 	}
 }
 
-/// <summary>Guests wait for host RaceEnd — local EndRace would desync payouts/UI.</summary>
+/// <summary>
+/// Everyone may EndRace locally (fixes infinite races when guest finished first).
+/// Host still broadcasts RaceEnd so peers who are still racing get pulled out.
+/// </summary>
 [HarmonyPatch(typeof(TrackManager), "EndRace")]
-internal static class GuestEndRaceGatePatches
+internal static class EndRaceSyncPatches
 {
-	[HarmonyPrefix]
-	private static bool Prefix()
+	[HarmonyPostfix]
+	private static void Postfix()
 	{
 		var rt = MpRuntime.Instance;
-		if (rt == null || !rt.Session.Linked) return true;
-		if (rt.Session.IsHost) return true;
-		if (WorldSync.SuppressLocalRaceEndBroadcast) return true; // applying host RaceEnd path
-		Plugin.Log.LogInfo("Guest EndRace blocked — waiting for host RaceEnd");
-		rt.Session.AddChat("* Finished — waiting for host");
-		return false;
+		if (rt == null || !rt.Session.Linked) return;
+		if (WorldSync.SuppressLocalRaceEndBroadcast) return;
+		if (!rt.Session.IsHost) return;
+		var last = RaceTracker.Last;
+		WorldSync.BroadcastRaceEnd(rt.Session,
+			last.survived ? last.place : 99,
+			last.survived, last.objectiveMet, !last.survived, RaceTracker.Quit);
 	}
 }
 

@@ -37,6 +37,10 @@ internal static class RaceSync
 	public static string MusicName { get; private set; } = "";
 	public static float CeasefireSeconds { get; private set; } = 10f;
 	public static int SelectedNodeIndex { get; private set; } = -1;
+	/// <summary>Sandbox-like: ignore finish line / cutoff pressure; pick any map.</summary>
+	public static bool FreePlay { get; set; }
+	/// <summary>Do not keep AI cars — peers use ghost primitives or empty grid.</summary>
+	public static bool NoBots { get; set; }
 	public static bool HasSetup { get; private set; }
 
 	/// <summary>True for the next TrackManager.SpawnEnemies — forces shared UnityEngine.Random seed.</summary>
@@ -76,6 +80,7 @@ internal static class RaceSync
 		MusicName = RunState.ActiveMapMusic != null ? RunState.ActiveMapMusic.name : "";
 		CeasefireSeconds = AmmoLockSwitch.CeasefireSeconds;
 		SelectedNodeIndex = RunState.HasSelection ? RunState.SelectedIndex : -1;
+		// FreePlay / NoBots kept from host UI toggles (not overwritten here).
 
 		SpawnSeed = unchecked(Environment.TickCount ^ (int)(DateTime.UtcNow.Ticks & 0x7fffffff));
 		if (SpawnSeed == 0) SpawnSeed = 1337;
@@ -83,14 +88,15 @@ internal static class RaceSync
 		SeedNextSpawn = true;
 		SeedNextHazards = true;
 		Plugin.Log.LogInfo(
-			$"RaceSetup capture: weather={WeatherName} short={ShortRace} variant={TrackVariantByte} laps={MaxLaps} seed={SpawnSeed} obj={obj.kind}");
+			$"RaceSetup capture: weather={WeatherName} short={ShortRace} variant={TrackVariantByte} laps={MaxLaps} seed={SpawnSeed} free={FreePlay} noBots={NoBots}");
 	}
 
 	public static void ApplyPacket(
 		int spawnSeed, bool shortRace, byte variant, int maxLaps,
 		string weatherName, string mapName, string sceneName,
 		byte objectiveKind, int objectiveAmount, string objectiveTarget,
-		string musicName, float ceasefireSeconds, int selectedNodeIndex)
+		string musicName, float ceasefireSeconds, int selectedNodeIndex,
+		bool freePlay = false, bool noBots = false)
 	{
 		SpawnSeed = spawnSeed == 0 ? 1337 : spawnSeed;
 		ShortRace = shortRace;
@@ -105,12 +111,14 @@ internal static class RaceSync
 		MusicName = musicName ?? "";
 		CeasefireSeconds = ceasefireSeconds > 0f ? ceasefireSeconds : AmmoLockSwitch.CeasefireSeconds;
 		SelectedNodeIndex = selectedNodeIndex;
+		FreePlay = freePlay;
+		NoBots = noBots;
 		HasSetup = true;
 		SeedNextSpawn = true;
 		SeedNextHazards = true;
 		ApplyRunContext();
 		Plugin.Log.LogInfo(
-			$"RaceSetup apply: weather={WeatherName} short={ShortRace} laps={MaxLaps} seed={SpawnSeed} obj={(ObjectiveKind)objectiveKind}");
+			$"RaceSetup apply: weather={WeatherName} short={ShortRace} laps={MaxLaps} free={FreePlay} noBots={NoBots}");
 	}
 
 	public static void ApplyRunContext()
@@ -118,6 +126,14 @@ internal static class RaceSync
 		RaceLength.Set(ShortRace);
 		TrackVariants.Set((TrackVariant)TrackVariantByte);
 		AmmoLockSwitch.CeasefireSeconds = CeasefireSeconds;
+		try
+		{
+			// Sandbox-like: never auto-end on finish line.
+			TrackManager.ignoreFinish = FreePlay;
+			if (FreePlay)
+				TrackManager.endRaceInstead = null;
+		}
+		catch { /* TrackManager statics */ }
 
 		var objective = new RaceObjective
 		{
@@ -245,12 +261,55 @@ internal static class RaceSync
 			// playerStart already placed by vanilla for slot 0
 		}
 
-		var rot = marker.rotation;
-		if (slot > 0)
-			rot = Quaternion.Euler(0f, marker.eulerAngles.y, 0f);
-
+		// Match SpawnEnemies heading: layout uses +90° yaw then LayoutHeading (mirror/reverse).
+		var rot = LayoutHeading(Quaternion.Euler(0f, 90f, 0f));
 		TeleportCar(car, pos, rot);
-		Plugin.Log.LogInfo($"Local player placed on grid slot {slot} @ {pos}");
+		Plugin.Log.LogInfo($"Local player placed on grid slot {slot} @ {pos} rotY={rot.eulerAngles.y:0}");
+	}
+
+	private static Quaternion LayoutHeading(Quaternion drawn)
+	{
+		try
+		{
+			if (TrackVariants.Mirrored)
+				drawn = TrackVariantApplier.MirrorRotation(drawn);
+			if (TrackVariants.Reversed)
+				drawn = Quaternion.Euler(0f, 180f, 0f) * drawn;
+		}
+		catch { /* variants */ }
+		return drawn;
+	}
+
+	/// <summary>Remove AI cars so only human peers remain (sandbox).</summary>
+	public static void StripBotsIfNeeded(TrackManager tm)
+	{
+		if (!NoBots || tm == null) return;
+		var doomed = new List<EnemyController>();
+		foreach (var e in tm.Enemies)
+		{
+			if (e == null) continue;
+			if (e.GetComponent<RemotePlayerHitbox>() != null) continue;
+			doomed.Add(e);
+		}
+		foreach (var e in doomed)
+		{
+			try
+			{
+				UnityEngine.Object.Destroy(e.gameObject);
+			}
+			catch { /* */ }
+		}
+		try
+		{
+			var field = AccessTools.Field(typeof(TrackManager), "enemies");
+			if (field?.GetValue(tm) is System.Collections.IList list)
+			{
+				foreach (var e in doomed)
+					list.Remove(e);
+			}
+		}
+		catch { /* */ }
+		Plugin.Log.LogInfo($"NoBots: stripped {doomed.Count} AI cars");
 	}
 
 	public static Transform? SlotMarker(TrackManager tm, int slot)

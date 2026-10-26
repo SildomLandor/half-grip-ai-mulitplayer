@@ -159,6 +159,7 @@ internal static class WorldSync
 	public static void ApplyRemoteRaceEnd(int place, bool survived, bool objectiveMet, bool wrecked, bool quit)
 	{
 		if (_applyingRemoteRaceEnd) return;
+		if (GameManager.raceOver) return; // already ended locally
 		_applyingRemoteRaceEnd = true;
 		SuppressLocalRaceEndBroadcast = true;
 		try
@@ -563,7 +564,43 @@ internal static class WorldSync
 			var impulse = dir * mag;
 			var at = Vector3.Lerp(localPos, gPos, 0.5f) + Vector3.up * 0.4f;
 			rb.AddForceAtPosition(impulse, at, ForceMode.VelocityChange);
-			session.SendTo(peer, NetProtocol.CollideImpulse(-impulse, at), false);
+			// Broadcast+filter — LAN SendTo alone often missed remapped peer ids.
+			session.Broadcast(NetProtocol.CollideImpulse(peer, -impulse, at), true);
+			// Local crash tick so contact also hurts.
+			try
+			{
+				var link = car.carLink;
+				if (link != null && mag > 4f)
+					link.TakeCrashDamage(mag * 0.35f, shake: true, DamageKind.Crash);
+			}
+			catch { /* */ }
+		}
+	}
+
+	/// <summary>Re-fit local PlayerLoadout onto LoadoutSpawner after a hard scene sync.</summary>
+	public static void EnsureLocalLoadoutFitted()
+	{
+		try
+		{
+			if (!PlayerLoadout.Known || PlayerLoadout.Equipped.Count == 0) return;
+			var spawner = UnityEngine.Object.FindFirstObjectByType<LoadoutSpawner>();
+			if (spawner == null) return;
+			foreach (var up in PlayerLoadout.Equipped)
+			{
+				if (up == null) continue;
+				bool already = false;
+				foreach (var s in spawner.Fitted)
+				{
+					if (s != null && s.upgrade == up) { already = true; break; }
+				}
+				if (!already)
+					spawner.Swap(null, up);
+			}
+			Plugin.Log.LogInfo($"Local loadout refit: {PlayerLoadout.Equipped.Count} upgrades");
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"EnsureLocalLoadoutFitted: {ex.Message}");
 		}
 	}
 
@@ -769,7 +806,8 @@ internal static class WorldSync
 				RaceSync.SpawnSeed, RaceSync.ShortRace, RaceSync.TrackVariantByte, RaceSync.MaxLaps,
 				RaceSync.WeatherName, RaceSync.MapName, RaceSync.SceneName,
 				RaceSync.ObjectiveKindByte, RaceSync.ObjectiveAmount, RaceSync.ObjectiveTarget,
-				RaceSync.MusicName, RaceSync.CeasefireSeconds, RaceSync.SelectedNodeIndex), true);
+				RaceSync.MusicName, RaceSync.CeasefireSeconds, RaceSync.SelectedNodeIndex,
+				RaceSync.FreePlay, RaceSync.NoBots), true);
 		}
 		BroadcastMapSelect(session);
 		BroadcastRunSnap(session);

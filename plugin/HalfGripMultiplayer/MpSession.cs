@@ -197,7 +197,9 @@ internal sealed class MpSession
 			RaceSync.ObjectiveTarget,
 			RaceSync.MusicName,
 			RaceSync.CeasefireSeconds,
-			RaceSync.SelectedNodeIndex), true);
+			RaceSync.SelectedNodeIndex,
+			RaceSync.FreePlay,
+			RaceSync.NoBots), true);
 		BroadcastSlotMap();
 		WorldSync.ForceBroadcastLoadout(this);
 		WorldSync.BroadcastMapSelect(this);
@@ -403,6 +405,11 @@ internal sealed class MpSession
 				{
 					var amount = r.ReadSingle();
 					var point = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					ulong target = 0;
+					if (ms.Position + 8 <= ms.Length)
+						target = r.ReadUInt64();
+					// target==0 → legacy (directed SendTo). Else only the named peer applies.
+					if (target != 0 && target != LocalId) break;
 					MpRuntime.Instance?.ApplyIncomingDamage(amount, point);
 					break;
 				}
@@ -468,9 +475,17 @@ internal sealed class MpSession
 					var music = NetProtocol.ReadString(r);
 					var cease = r.ReadSingle();
 					var selected = r.ReadInt32();
+					bool freePlay = false, noBots = false;
+					if (ms.Position < ms.Length)
+					{
+						freePlay = r.ReadByte() != 0;
+						if (ms.Position < ms.Length)
+							noBots = r.ReadByte() != 0;
+					}
 					RaceSync.ApplyPacket(seed, shortRace, variant, laps, weather, map, scene,
-						objKind, objAmount, objTarget, music, cease, selected);
-					AddChat($"* Race setup: {map} / {weather} / laps={laps}");
+						objKind, objAmount, objTarget, music, cease, selected, freePlay, noBots);
+					AddChat($"* Race setup: {map} / {weather} / laps={laps}" +
+					        (freePlay ? " [free]" : "") + (noBots ? " [no bots]" : ""));
 					break;
 				}
 				case MsgType.SlotMap:
@@ -623,8 +638,14 @@ internal sealed class MpSession
 				}
 				case MsgType.CollideImpulse:
 				{
+					ulong target = 0;
+					// v10+: targetPeer first. Legacy = 24 bytes of floats only.
+					long left = ms.Length - ms.Position;
+					if (left >= 32)
+						target = r.ReadUInt64();
 					var impulse = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
 					var at = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					if (target != 0 && target != LocalId) break;
 					WorldSync.ApplyCollideImpulse(impulse, at);
 					break;
 				}
