@@ -1,0 +1,7 @@
+﻿<!-- Copy to Directory.Build.props.user and edit. Do not commit game DLLs. -->
+<Project>
+  <PropertyGroup>
+    <HalfGripAssembliesDump>c:\Users\Sildom Landor\Documents\half grip\Assemblies</HalfGripAssembliesDump>
+    <HalfGripManaged>C:\Program Files (x86)\Steam\steamapps\common\Half Grip Demo\HalfGrip_Data\Managed</HalfGripManaged>
+  </PropertyGroup>
+</Project>
