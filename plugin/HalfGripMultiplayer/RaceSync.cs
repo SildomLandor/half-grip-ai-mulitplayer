@@ -43,6 +43,31 @@ internal static class RaceSync
 	public static bool NoBots { get; set; }
 	public static bool HasSetup { get; private set; }
 
+	public static void ForceCeasefire(float seconds)
+	{
+		if (seconds <= 0f) return;
+		CeasefireSeconds = seconds;
+		AmmoLockSwitch.CeasefireSeconds = seconds;
+	}
+
+	public static void ForceShortRace(bool on)
+	{
+		ShortRace = on;
+		RaceLength.Set(on);
+	}
+
+	public static void ForceObjectiveAssassinate()
+	{
+		try
+		{
+			ObjectiveKindByte = (byte)ObjectiveKind.Assassinate;
+			var pending = RunState.PendingObjective;
+			pending.kind = ObjectiveKind.Assassinate;
+			PendingObjectiveProp?.SetValue(null, pending);
+		}
+		catch { /* */ }
+	}
+
 	/// <summary>True for the next TrackManager.SpawnEnemies — forces shared UnityEngine.Random seed.</summary>
 	public static bool SeedNextSpawn { get; set; }
 	public static bool SeedNextHazards { get; set; }

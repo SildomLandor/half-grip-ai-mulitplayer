@@ -1,6 +1,6 @@
 ﻿# Half Grip Multiplayer Protocol
 
-**Version:** 40 (plugin 0.10.27-dev)
+**Version:** 41 (plugin 0.10.31)
 
 ## Transport
 

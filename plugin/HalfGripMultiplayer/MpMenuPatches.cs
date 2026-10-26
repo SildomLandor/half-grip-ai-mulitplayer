@@ -7,25 +7,23 @@ using UnityEngine.UI;
 
 namespace HalfGripMultiplayer;
 
-/// <summary>Hooks the game's MainMenu Multiplayer stub + injects a start-menu button.</summary>
+/// <summary>Hooks the game's MainMenu Multiplayer stub + injects start-menu / main-menu buttons.</summary>
 [HarmonyPatch(typeof(MainMenu), nameof(MainMenu.OpenMultiplayer))]
 internal static class MainMenuOpenMultiplayerPatches
 {
 	[HarmonyPrefix]
 	private static bool Prefix(MainMenu __instance)
 	{
-		if (__instance == null) return false;
+		Plugin.Log.LogInfo("MainMenu.OpenMultiplayer invoked");
 		try
 		{
-			var ui = MpMenuUi.Ensure();
-			ui.OpenForMainMenu(__instance);
-			__instance.ShowMultiplayer();
-			MpRuntime.Instance?.SetUiVisibleFromMenu(true);
-			Plugin.Log.LogInfo("MainMenu.OpenMultiplayer → ShowMultiplayer + MpMenuUi");
+			MpRuntime.Ensure().ForceOpenMenu();
+			// Keep game view on Main so animator/sections don't fight our overlay.
+			try { __instance?.CloseMultiplayer(); } catch { /* */ }
 		}
 		catch (System.Exception ex)
 		{
-			Plugin.Log.LogWarning($"OpenMultiplayer: {ex.Message}");
+			Plugin.Log.LogWarning($"OpenMultiplayer: {ex}");
 		}
 		return false; // skip empty original body
 	}
@@ -40,65 +38,83 @@ internal static class MainMenuAwakeMultiplayerPatches
 		if (__instance == null) return;
 		try
 		{
-			// Pre-build section so Pull/ShowSection can activate it.
-			var ui = MpMenuUi.Ensure();
-			ui.OpenForMainMenu(__instance);
-			ui.Show(false);
-			EnsureMainMenuMultiplayerButton(__instance);
+			// Dummy section so SetView(Multiplayer) never touches our DDOL UI.
+			if (__instance.MultiplayerSection == null)
+			{
+				var dummy = new GameObject("HGMP_MultiplayerSectionDummy");
+				dummy.transform.SetParent(__instance.transform, false);
+				dummy.SetActive(false);
+				__instance.MultiplayerSection = dummy;
+			}
+
+			WireAllMultiplayerButtons(__instance);
+			InjectFallbackButton(__instance);
+			Plugin.Log.LogInfo("MainMenu awake: MP buttons wired");
 		}
 		catch (System.Exception ex)
 		{
-			Plugin.Log.LogWarning($"MainMenu MP awake: {ex.Message}");
+			Plugin.Log.LogWarning($"MainMenu MP awake: {ex}");
 		}
 	}
 
-	private static void EnsureMainMenuMultiplayerButton(MainMenu menu)
+	private static void WireAllMultiplayerButtons(MainMenu menu)
 	{
-		// If a scene button already calls OpenMultiplayer, we're done.
+		int wired = 0;
 		foreach (var btn in menu.GetComponentsInChildren<Button>(true))
 		{
 			if (btn == null) continue;
+			bool match = false;
 			int count = btn.onClick.GetPersistentEventCount();
 			for (int i = 0; i < count; i++)
 			{
 				if (btn.onClick.GetPersistentMethodName(i) == "OpenMultiplayer")
 				{
-					btn.gameObject.SetActive(true);
-					btn.interactable = true;
-					var tmp = btn.GetComponentInChildren<TMP_Text>(true);
-					if (tmp != null && string.IsNullOrWhiteSpace(tmp.text))
-						tmp.text = "MULTIPLAYER";
-					return;
+					match = true;
+					break;
 				}
 			}
 			var label = btn.GetComponentInChildren<TMP_Text>(true);
-			if (label != null && label.text != null &&
-			    label.text.IndexOf("MULTI", System.StringComparison.OrdinalIgnoreCase) >= 0)
-			{
-				btn.gameObject.SetActive(true);
-				btn.interactable = true;
-				btn.onClick.RemoveAllListeners();
-				btn.onClick.AddListener(menu.OpenMultiplayer);
-				return;
-			}
-		}
+			string text = label != null ? label.text ?? "" : "";
+			if (!match && text.IndexOf("MULTI", System.StringComparison.OrdinalIgnoreCase) < 0)
+				continue;
 
-		// No scene button — clone style from Continue / Collection if possible.
+			btn.gameObject.SetActive(true);
+			btn.interactable = true;
+			if (label != null && string.IsNullOrWhiteSpace(label.text))
+				label.text = "MULTIPLAYER";
+			btn.onClick.RemoveAllListeners();
+			btn.onClick.AddListener(() =>
+			{
+				Plugin.Log.LogInfo($"MainMenu button '{btn.name}' → ForceOpenMenu");
+				try { menu.PlayClick(); } catch { /* */ }
+				MpRuntime.Ensure().ForceOpenMenu();
+			});
+			wired++;
+		}
+		Plugin.Log.LogInfo($"Wired {wired} MainMenu multiplayer button(s)");
+	}
+
+	private static void InjectFallbackButton(MainMenu menu)
+	{
+		if (menu.transform.Find("HGMP_MultiplayerBtn") != null) return;
 		var skin = menu.Skin;
-		if (skin == null) return;
+		if (skin == null)
+		{
+			Plugin.Log.LogWarning("MainMenu Skin null — skip inject");
+			return;
+		}
 		var canvas = menu.GetComponentInParent<Canvas>();
 		Transform parent = canvas != null ? canvas.transform : menu.transform;
-		// Prefer sitting near other main buttons (left column).
 		var anchor = FindMainButtonColumn(menu) ?? parent;
 		var btnGo = UiKit.Btn("HGMP_MultiplayerBtn", anchor, skin.menuButton, skin.buttonSize,
 			"MULTIPLAYER", skin.font, skin.buttonFontSize, skin.textColor, skin.menuButtonPressed,
 			() =>
 			{
 				menu.PlayClick();
-				menu.OpenMultiplayer();
+				Plugin.Log.LogInfo("Injected MainMenu MULTIPLAYER clicked");
+				MpRuntime.Ensure().ForceOpenMenu();
 			});
-		var rt = (RectTransform)btnGo.transform;
-		rt.anchoredPosition = new Vector2(0f, -220f);
+		((RectTransform)btnGo.transform).anchoredPosition = new Vector2(0f, -220f);
 		Plugin.Log.LogInfo("Injected MainMenu MULTIPLAYER button");
 	}
 
@@ -122,8 +138,7 @@ internal static class MainMenuCloseMultiplayerPatches
 	[HarmonyPostfix]
 	private static void Postfix()
 	{
-		MpMenuUi.Instance?.Show(false);
-		MpRuntime.Instance?.SetUiVisibleFromMenu(false);
+		// Do not auto-close IMGUI here — Escape / Hide owns that.
 	}
 }
 
@@ -142,15 +157,26 @@ internal static class StartMenuMultiplayerButtonPatches
 	[HarmonyPostfix]
 	private static void Postfix(StartMenuProgression __instance)
 	{
-		if (__instance == null || __instance.Skin == null) return;
+		if (__instance == null) return;
 		try
 		{
-			if (MainButtonsField?.GetValue(__instance) is not List<Button> buttons) return;
-			// Avoid duplicates on domain reload.
+			if (__instance.Skin == null)
+			{
+				Plugin.Log.LogWarning("StartMenu BuildMain: Skin null");
+				return;
+			}
+			if (MainButtonsField?.GetValue(__instance) is not List<Button> buttons)
+			{
+				Plugin.Log.LogWarning("StartMenu BuildMain: mainButtons missing");
+				return;
+			}
 			foreach (var b in buttons)
 			{
 				if (b != null && b.name.IndexOf("MULTI", System.StringComparison.OrdinalIgnoreCase) >= 0)
+				{
+					Plugin.Log.LogInfo("StartMenu already has MULTIPLAYER");
 					return;
+				}
 			}
 
 			Button? btn = null;
@@ -162,8 +188,8 @@ internal static class StartMenuMultiplayerButtonPatches
 					(System.Action)(() =>
 					{
 						__instance.PlayClick();
-						MpRuntime.Instance?.SetUiVisibleFromMenu(true);
-						MpMenuUi.Ensure().OpenOverlay(__instance.Skin, __instance.Root);
+						Plugin.Log.LogInfo("StartMenu MULTIPLAYER clicked");
+						MpRuntime.Ensure().ForceOpenMenu();
 					}),
 				}) as Button;
 			}
@@ -175,8 +201,7 @@ internal static class StartMenuMultiplayerButtonPatches
 					skin.font, skin.buttonFontSize, skin.textColor, skin.menuButtonPressed, () =>
 					{
 						__instance.PlayClick();
-						MpRuntime.Instance?.SetUiVisibleFromMenu(true);
-						MpMenuUi.Ensure().OpenOverlay(skin, __instance.Root);
+						MpRuntime.Ensure().ForceOpenMenu();
 					});
 			}
 			buttons.Add(btn);
@@ -191,7 +216,7 @@ internal static class StartMenuMultiplayerButtonPatches
 		}
 		catch (System.Exception ex)
 		{
-			Plugin.Log.LogWarning($"StartMenu MP button: {ex.Message}");
+			Plugin.Log.LogWarning($"StartMenu MP button: {ex}");
 		}
 	}
 }

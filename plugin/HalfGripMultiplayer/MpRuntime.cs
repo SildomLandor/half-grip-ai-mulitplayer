@@ -12,6 +12,23 @@ internal sealed class MpRuntime : MonoBehaviour
 {
 	public static MpRuntime? Instance { get; private set; }
 
+	/// <summary>Create or return the runtime. Prefer hosting on the BepInEx plugin GO.</summary>
+	public static MpRuntime Ensure(GameObject? host = null)
+	{
+		if (Instance != null) return Instance;
+		GameObject go = host != null ? host : new GameObject("HalfGripMultiplayer");
+		if (host == null) UnityEngine.Object.DontDestroyOnLoad(go);
+		var existing = go.GetComponent<MpRuntime>();
+		if (existing != null)
+		{
+			Instance = existing;
+			return existing;
+		}
+		var rt = go.AddComponent<MpRuntime>();
+		Plugin.Log.LogInfo("MpRuntime created/restored");
+		return rt;
+	}
+
 	public readonly MpSession Session = new();
 	public bool UiVisible;
 	public string ChatDraft = "";
@@ -283,34 +300,74 @@ internal sealed class MpRuntime : MonoBehaviour
 		}
 	}
 
+	private static bool KeyDown(KeyCode key)
+	{
+		if (key == KeyCode.None) return false;
+		// Prefer the game's input path (works with muted/pad/physical remap).
+		try
+		{
+			if (GameInput.KeyDown(key)) return true;
+		}
+		catch { /* */ }
+		try
+		{
+			if (Input.GetKeyDown(key)) return true;
+		}
+		catch { /* legacy input disabled */ }
+		try
+		{
+			var kb = UnityEngine.InputSystem.Keyboard.current;
+			if (kb == null) return false;
+			return key switch
+			{
+				KeyCode.F4 => kb.f4Key.wasPressedThisFrame,
+				KeyCode.F5 => kb.f5Key.wasPressedThisFrame,
+				KeyCode.F6 => kb.f6Key.wasPressedThisFrame,
+				KeyCode.F7 => kb.f7Key.wasPressedThisFrame,
+				KeyCode.F8 => kb.f8Key.wasPressedThisFrame,
+				KeyCode.Escape => kb.escapeKey.wasPressedThisFrame,
+				KeyCode.Return => kb.enterKey.wasPressedThisFrame,
+				KeyCode.KeypadEnter => kb.numpadEnterKey.wasPressedThisFrame,
+				KeyCode.Tab => kb.tabKey.wasPressedThisFrame,
+				KeyCode.Mouse2 => UnityEngine.InputSystem.Mouse.current != null &&
+				                  UnityEngine.InputSystem.Mouse.current.middleButton.wasPressedThisFrame,
+				_ => false,
+			};
+		}
+		catch { return false; }
+	}
+
 	private void Update()
 	{
 		try { Session.Pump(); } catch { /* steam/lan */ }
 
 		var p = Plugin.Instance;
-		if (Input.GetKeyDown(p.ToggleUiKey.Value))
+		if (KeyDown(p.ToggleUiKey.Value))
+		{
+			Plugin.Log.LogInfo($"Hotkey {p.ToggleUiKey.Value} → toggle menu (was {UiVisible})");
 			SetUiVisible(!UiVisible);
-		if (Input.GetKeyDown(KeyCode.Escape) && UiVisible)
+		}
+		if (KeyDown(KeyCode.Escape) && UiVisible)
 			SetUiVisible(false);
 		// F7 always tries Steam host (do not require Kind==Steam — offline default blocked hosting).
-		if (Input.GetKeyDown(p.HostKey.Value))
+		if (KeyDown(p.HostKey.Value))
 			Session.HostSteam();
-		if (Input.GetKeyDown(p.LeaveKey.Value))
+		if (KeyDown(p.LeaveKey.Value))
 		{
 			ExitSpectate();
 			Session.Leave();
 			ClearGhosts();
 		}
-		if (Session.Linked && Input.GetKeyDown(p.PingKey.Value) && Time.unscaledTime >= _nextPingSend && !_quickChat)
+		if (Session.Linked && KeyDown(p.PingKey.Value) && Time.unscaledTime >= _nextPingSend && !_quickChat)
 			TrySendWorldPing();
 		if (Session.Linked && Session.InLobbyPhase && !_quickChat && !UiVisible &&
-		    Input.GetKeyDown(p.ReadyKey.Value))
+		    KeyDown(p.ReadyKey.Value))
 		{
 			Session.SetReady(!Session.LocalReady);
 			PushToast(Session.LocalReady ? "* Ready" : "* Unready");
 		}
 		if (Session.Linked && Session.IsHost && Session.InLobbyPhase && !_quickChat && !UiVisible &&
-		    Input.GetKeyDown(p.ForceStartKey.Value))
+		    KeyDown(p.ForceStartKey.Value))
 		{
 			Session.UnlockForceStart();
 			PushToast("* Force start ON — press Start Race");
@@ -967,35 +1024,28 @@ internal sealed class MpRuntime : MonoBehaviour
 		return tm != null ? tm.playerCarController : null;
 	}
 
-	private void SetUiVisible(bool visible)
+	internal void SetUiVisible(bool visible)
 	{
 		UiVisible = visible;
 		if (!visible)
-			_unfocusGui = true;
-		// Prefer game-styled uGUI when a menu skin is available; IMGUI remains race HUD / fallback.
-		try
 		{
-			var menu = UnityEngine.Object.FindFirstObjectByType<MainMenu>();
-			if (visible && menu != null)
-			{
-				MpMenuUi.Ensure().OpenForMainMenu(menu);
-				try { menu.ShowMultiplayer(); } catch { /* */ }
-				return;
-			}
-			if (visible)
-			{
-				MpMenuUi.Ensure().OpenOverlay();
-				return;
-			}
-			MpMenuUi.Instance?.Show(false);
+			_unfocusGui = true;
+			try { MpMenuUi.Instance?.Show(false); } catch { /* */ }
+			Plugin.Log.LogInfo("MP menu closed (IMGUI)");
+			return;
 		}
-		catch { /* fall back to IMGUI */ }
+		// IMGUI is the reliable path. uGUI overlay is optional and must not block IMGUI.
+		try { MpMenuUi.Instance?.Show(false); } catch { /* */ }
+		Plugin.Log.LogInfo($"MP menu opened (IMGUI) v{PluginInfo.Version}");
 	}
 
-	internal void SetUiVisibleFromMenu(bool visible)
+	internal void SetUiVisibleFromMenu(bool visible) => SetUiVisible(visible);
+
+	/// <summary>Public entry for injected buttons / patches.</summary>
+	internal void ForceOpenMenu()
 	{
-		UiVisible = visible;
-		if (!visible) _unfocusGui = true;
+		Plugin.Log.LogInfo("ForceOpenMenu");
+		SetUiVisible(true);
 	}
 
 	internal void ClearGhostsPublic() => ClearGhosts();
@@ -1010,15 +1060,19 @@ internal sealed class MpRuntime : MonoBehaviour
 			GUI.FocusControl(null);
 			_unfocusGui = false;
 		}
-		bool uguiOpen = MpMenuUi.Instance != null && MpMenuUi.Instance.IsOpen;
-		if (!UiVisible || uguiOpen)
+
+		// Always-visible open affordance — does not depend on F6 or scene buttons.
+		if (!UiVisible)
 		{
-			// Quick chat is the only TextField while menu is hidden.
-			if (!uguiOpen && Time.unscaledTime < _hintUntil && !_quickChat)
+			if (GUI.Button(new Rect(12f, 12f, 160f, 40f), "MP MENU (F6)"))
 			{
-				var key = Plugin.Instance.ToggleUiKey.Value;
-				GUI.Label(new Rect(12f, 12f, 640f, 22f),
-					$"Half Grip MP — {key} menu · Enter chat · 1-4 taunt · Tab spectate · MMB ping", _hint);
+				Plugin.Log.LogInfo("MP MENU corner button clicked");
+				SetUiVisible(true);
+			}
+			if (Time.unscaledTime < _hintUntil && !_quickChat)
+			{
+				GUI.Label(new Rect(180f, 18f, 520f, 28f),
+					"Half Grip Multiplayer — click MP MENU or press F6", _hint);
 			}
 			if (Session.Linked)
 			{
@@ -1027,11 +1081,15 @@ internal sealed class MpRuntime : MonoBehaviour
 				DrawToasts();
 				DrawQuickChatBar();
 			}
-			if (uguiOpen) return;
-			if (!UiVisible) return;
+			return;
 		}
 
-		// IMGUI fallback (no ProgressionMenuSkin / mid-race overlay).
+		if (Session.Linked)
+		{
+			DrawToasts();
+			DrawQuickChatBar();
+		}
+
 		const float w = 440f;
 		var rect = new Rect(12f, 12f, w, Mathf.Min(660f, Screen.height - 24f));
 		GUI.Box(rect, GUIContent.none, _box);

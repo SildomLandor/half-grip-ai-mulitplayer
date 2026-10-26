@@ -4,11 +4,11 @@ BepInEx multiplayer mod for **Half Grip Demo** (Steam AppID 4163360).
 
 ## Install
 
-1. Download **[HalfGripMultiplayer-0.10.28-game-root.zip](https://github.com/SildomLandor/half-grip-ai-mulitplayer/releases/download/v0.10.28/HalfGripMultiplayer-0.10.28-game-root.zip)**
+1. Download **[HalfGripMultiplayer-0.10.31-game-root.zip](https://github.com/SildomLandor/half-grip-ai-mulitplayer/releases/download/v0.10.31/HalfGripMultiplayer-0.10.31-game-root.zip)**
 2. Unpack into the game folder (next to `HalfGrip.exe`). Overwrite if asked.
-3. Launch. Open **MULTIPLAYER** in the main menu, or press **F6**.
+3. Launch. Click **MP MENU (F6)** top-left, open **MULTIPLAYER**, or press **F6**.
 
-Already have BepInEx? Use the smaller [plugin-only zip](https://github.com/SildomLandor/half-grip-ai-mulitplayer/releases/download/v0.10.28/HalfGripMultiplayer-0.10.28-plugin-only.zip).
+Already have BepInEx? Use the smaller [plugin-only zip](https://github.com/SildomLandor/half-grip-ai-mulitplayer/releases/download/v0.10.31/HalfGripMultiplayer-0.10.31-plugin-only.zip).
 
 ## Hotkeys
 
@@ -28,4 +28,4 @@ Already have BepInEx? Use the smaller [plugin-only zip](https://github.com/Sildo
 
 - Money, shop, and loadout stay **per-player** in this release.
 - Steam friends lobby or LAN (`UDP 27777`).
-- Protocol **v40** — all players need the same mod version.
+- Protocol **v41** — all players need the same mod version.

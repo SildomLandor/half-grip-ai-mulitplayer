@@ -133,11 +133,14 @@ internal enum MsgType : byte
 	BarrelFx = 123,
 	DiceFx = 124,
 	BeerFx = 125,
+	TradeOffer = 126,
+	TradeAccept = 127,
+	ShopPool = 128,
 }
 
 internal static class NetProtocol
 {
-	public const byte Version = 40;
+	public const byte Version = 41;
 	public const int RunSnapChunkBytes = 900;
 	public const int DefaultLanPort = 27777;
 	public const int SteamChannel = 0;

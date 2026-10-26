@@ -47,11 +47,19 @@ public sealed class Plugin : BaseUnityPlugin
 		_harmony = new Harmony(PluginInfo.GUID);
 		_harmony.PatchAll();
 
-		var go = new GameObject("HalfGripMultiplayer");
-		DontDestroyOnLoad(go);
-		go.AddComponent<MpRuntime>();
+		// Attach to the BepInEx plugin object (already DDOL). A separate GO created in
+		// Awake was destroyed on the first scene load, so F6/Update/OnGUI never ran and
+		// button clicks hit a null MpRuntime.Instance.
+		MpRuntime.Ensure(gameObject);
 
-		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — WIP (no release until asked).");
+		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — F6 / MP MENU corner button.");
+	}
+
+	private void Update()
+	{
+		// Recreate if something destroyed the component mid-session.
+		if (Enabled != null && Enabled.Value)
+			MpRuntime.Ensure(gameObject);
 	}
 
 	private void OnDestroy() => _harmony?.UnpatchSelf();
@@ -61,5 +69,5 @@ internal static class PluginInfo
 {
 	public const string GUID = "landor.halfgrip.multiplayer";
 	public const string Name = "Half Grip Multiplayer";
-	public const string Version = "0.10.28";
+	public const string Version = "0.10.31";
 }

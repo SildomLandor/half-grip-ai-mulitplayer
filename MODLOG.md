@@ -429,3 +429,15 @@ Protocol v6. Synced: hazards seed, objective/boss/music/ceasefire in RaceSetup, 
 ## 0.10.28 - GitHub release (2026-10-26)
 - Tag v0.10.28; game-root + plugin-only zips.
 - Bundles menu UI + protocol v40 + sync batch through 0.10.27.
+
+## 0.10.29-dev - menu blank fix (2026-10-26)
+- Root cause: MpMenuUi parented under DDOL GO with no Canvas; IsOpen=true blocked IMGUI; empty screen on F6 / MULTIPLAYER.
+- Fix: dedicated ScreenSpaceOverlay Canvas + GraphicRaycaster; build without skin fallback; EventSystem ensure; F6 logs open/fail.
+
+## 0.10.31-dev - MpRuntime destroyed on scene load (2026-10-26)
+- Root cause: separate DDOL GO from Plugin.Awake died on first scene load ? Instance null; button clicks logged but ForceOpenMenu no-op; no Update/OnGUI/F6.
+- Fix: host MpRuntime on BepInEx plugin GameObject; Ensure() recreates; IMGUI primary + corner MP MENU; buttons call Ensure().ForceOpenMenu().
+
+## 0.10.31 - GitHub release (2026-10-26)
+- Tag v0.10.31; game-root + plugin-only zips.
+- Menu open fix (MpRuntime on BepInEx host) + protocol v41.

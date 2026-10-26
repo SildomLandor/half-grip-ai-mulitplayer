@@ -16,6 +16,7 @@ internal sealed class MpMenuUi : MonoBehaviour
 	public static MpMenuUi? Instance { get; private set; }
 
 	private ProgressionMenuSkin? _skin;
+	private Canvas? _canvas;
 	private RectTransform? _root;
 	private TMP_Text? _status;
 	private TMP_Text? _peers;
@@ -32,7 +33,11 @@ internal sealed class MpMenuUi : MonoBehaviour
 	private float _nextRefresh;
 	private bool _built;
 	private MainMenu? _boundMain;
-	public bool IsOpen => _root != null && _root.gameObject.activeSelf;
+	private TMP_FontAsset? _font;
+
+	/// <summary>True only when the panel is built on a real Canvas and active.</summary>
+	public bool IsOpen =>
+		_built && _canvas != null && _root != null && _root.gameObject.activeInHierarchy;
 
 	public static MpMenuUi Ensure()
 	{
@@ -50,28 +55,32 @@ internal sealed class MpMenuUi : MonoBehaviour
 
 	private void Update()
 	{
-		if (!_built || _root == null || !_root.gameObject.activeSelf) return;
+		if (!IsOpen) return;
 		if (Time.unscaledTime < _nextRefresh) return;
 		_nextRefresh = Time.unscaledTime + 0.35f;
 		RefreshDynamic();
 	}
 
-	public void OpenForMainMenu(MainMenu menu)
+	public void PrepareForMainMenu(MainMenu menu)
 	{
 		_boundMain = menu;
-		RectTransform? parent = null;
-		var canvas = menu.GetComponentInParent<Canvas>();
-		if (canvas != null) parent = canvas.transform as RectTransform;
-		if (parent == null && menu.Root != null) parent = menu.Root;
-		EnsureBuilt(menu.Skin, parent);
-		AttachAsMainSection(menu);
+		EnsureBuilt(menu != null ? menu.Skin : null);
+		if (menu != null && _root != null)
+			menu.MultiplayerSection = _root.gameObject;
+	}
+
+	public void OpenForMainMenu(MainMenu menu)
+	{
+		PrepareForMainMenu(menu);
 		Show(true);
+		try { menu?.ShowMultiplayer(); } catch { /* view switch optional */ }
 	}
 
 	public void OpenOverlay(ProgressionMenuSkin? skin = null, Transform? parent = null)
 	{
+		_ = parent;
 		_boundMain = null;
-		EnsureBuilt(skin, parent as RectTransform);
+		EnsureBuilt(skin);
 		Show(true);
 	}
 
@@ -90,62 +99,87 @@ internal sealed class MpMenuUi : MonoBehaviour
 
 	public void Show(bool open)
 	{
-		if (_root == null) return;
+		EnsureBuilt(_skin);
+		if (_root == null || _canvas == null)
+		{
+			Plugin.Log.LogWarning("MpMenuUi.Show: panel not built");
+			return;
+		}
+		_canvas.gameObject.SetActive(open);
 		_root.gameObject.SetActive(open);
-		if (open) RefreshDynamic();
+		if (open)
+		{
+			_canvas.sortingOrder = 500;
+			EnsureEventSystem();
+			RefreshDynamic();
+			Plugin.Log.LogInfo("MpMenuUi opened");
+		}
+	}
+
+	private static void EnsureEventSystem()
+	{
+		if (UnityEngine.EventSystems.EventSystem.current != null) return;
+		var go = new GameObject("HGMP_EventSystem",
+			typeof(UnityEngine.EventSystems.EventSystem),
+			typeof(UnityEngine.EventSystems.StandaloneInputModule));
+		DontDestroyOnLoad(go);
 	}
 
 	public void ToggleOverlay()
 	{
-		if (!_built) OpenOverlay(FindSkin());
-		else Show(!IsOpen);
+		if (IsOpen) Close();
+		else OpenOverlay(FindSkin());
 	}
 
-	private void AttachAsMainSection(MainMenu menu)
+	private void EnsureBuilt(ProgressionMenuSkin? skin)
 	{
-		if (_root == null) return;
-		menu.MultiplayerSection = _root.gameObject;
-		if (_root.parent != menu.transform)
-			_root.SetParent(menu.transform, false);
-		StretchFull(_root);
-	}
+		_skin = skin ?? _skin ?? FindSkin();
+		if (_built && _root != null && _canvas != null) return;
 
-	private void EnsureBuilt(ProgressionMenuSkin? skin, RectTransform? preferParent)
-	{
-		_skin = skin ?? FindSkin();
-		if (_skin == null)
+		EnsureCanvas();
+		_font = _skin != null ? _skin.font : null;
+		if (_font == null)
 		{
-			Plugin.Log.LogWarning("MpMenuUi: ProgressionMenuSkin missing — panel deferred");
-			return;
+			try { _font = TMP_Settings.defaultFontAsset; } catch { /* */ }
 		}
-		if (_built && _root != null) return;
 
-		Transform parent = preferParent != null ? preferParent : transform;
+		var parent = _canvas!.transform;
 		_root = UiKit.Rect("HGMP_Multiplayer", parent, new Vector2(1920f, 1080f));
 		StretchFull(_root);
 		_root.gameObject.layer = LayerMask.NameToLayer("UI");
 
-		var bg = UiKit.Fill("Background", _root, _skin.panelBackground);
+		var titleSize = _skin != null ? _skin.titleFontSize : 48f;
+		var btnSize = _skin != null ? _skin.buttonFontSize : 32f;
+		var small = _skin != null ? _skin.smallFontSize : 22f;
+		var textCol = _skin != null ? _skin.textColor : Color.white;
+		var dimCol = _skin != null ? _skin.dimTextColor : new Color(0.7f, 0.7f, 0.75f);
+		var gold = _skin != null ? _skin.goldColor : new Color(1f, 0.83f, 0.35f);
+		var menuBtn = _skin != null ? _skin.menuButton : null;
+		var menuBtnPressed = _skin != null ? _skin.menuButtonPressed : null;
+		var closeSpr = _skin != null ? _skin.closeButton : null;
+		var panelBg = _skin != null ? _skin.panelBackground : null;
+
+		var bg = UiKit.Fill("Background", _root, panelBg);
 		bg.raycastTarget = true;
-		bg.color = new Color(1f, 1f, 1f, 0.98f);
+		bg.color = panelBg != null ? new Color(1f, 1f, 1f, 0.98f) : new Color(0.06f, 0.06f, 0.08f, 0.96f);
 
 		var header = UiKit.Label("Header", _root, new Vector2(900f, 70f), "MULTIPLAYER",
-			_skin.font, _skin.titleFontSize, _skin.textColor, TextAlignmentOptions.Left);
+			_font, titleSize, gold, TextAlignmentOptions.Left);
 		header.rectTransform.anchoredPosition = new Vector2(-480f, 430f);
 
 		_status = UiKit.Label("Status", _root, new Vector2(700f, 40f), "Offline",
-			_skin.font, _skin.smallFontSize, _skin.dimTextColor, TextAlignmentOptions.Left);
+			_font, small, dimCol, TextAlignmentOptions.Left);
 		_status.rectTransform.anchoredPosition = new Vector2(-480f, 370f);
 
-		((RectTransform)UiKit.Btn("Close", _root, _skin.closeButton, new Vector2(64f, 64f),
-			null, _skin.font, 0f, _skin.textColor, null, () =>
+		((RectTransform)UiKit.Btn("Close", _root, closeSpr, new Vector2(64f, 64f),
+			"X", _font, 28f, textCol, null, () =>
 			{
 				PlayClick();
 				Close();
 			}, sliced: false).transform).anchoredPosition = new Vector2(860f, 430f);
 
-		((RectTransform)UiKit.Btn("Back", _root, _skin.menuButton, new Vector2(240f, 80f),
-			Loc.T("BACK"), _skin.font, _skin.buttonFontSize, _skin.textColor, _skin.menuButtonPressed, () =>
+		((RectTransform)UiKit.Btn("Back", _root, menuBtn, new Vector2(240f, 80f),
+			"BACK", _font, btnSize, textCol, menuBtnPressed, () =>
 			{
 				PlayClick();
 				Close();
@@ -159,15 +193,43 @@ internal sealed class MpMenuUi : MonoBehaviour
 
 		_built = true;
 		_root.gameObject.SetActive(false);
-		Plugin.Log.LogInfo("MpMenuUi panel built");
+		if (_canvas != null) _canvas.gameObject.SetActive(false);
+		Plugin.Log.LogInfo("MpMenuUi panel built (canvas overlay)");
 	}
+
+	private void EnsureCanvas()
+	{
+		if (_canvas != null) return;
+		var go = new GameObject("HGMP_MenuCanvas", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+		go.transform.SetParent(transform, false);
+		go.layer = LayerMask.NameToLayer("UI");
+		_canvas = go.GetComponent<Canvas>();
+		_canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+		_canvas.sortingOrder = 500;
+		var scaler = go.GetComponent<CanvasScaler>();
+		scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+		scaler.referenceResolution = new Vector2(1920f, 1080f);
+		scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.MatchWidthOrHeight;
+		scaler.matchWidthOrHeight = 0.5f;
+	}
+
+	private float CardFont => _skin != null ? _skin.cardFontSize : 26f;
+	private float SmallFont => _skin != null ? _skin.smallFontSize : 22f;
+	private float BtnFont => _skin != null ? Mathf.Min(_skin.buttonFontSize, 32f) : 28f;
+	private Color TextCol => _skin != null ? _skin.textColor : Color.white;
+	private Color DimCol => _skin != null ? _skin.dimTextColor : new Color(0.7f, 0.7f, 0.75f);
+	private Color GoldCol => _skin != null ? _skin.goldColor : new Color(1f, 0.83f, 0.35f);
+	private Sprite? MenuBtnSpr => _skin != null ? _skin.menuButton : null;
+	private Sprite? MenuBtnPressedSpr => _skin != null ? _skin.menuButtonPressed : null;
+	private Sprite? CellSpr => _skin != null ? _skin.itemCell : null;
+	private Sprite? BadgeSpr => _skin != null ? _skin.counterBadge : null;
 
 	private void BuildSteamColumn()
 	{
 		var col = UiKit.Rect("Steam", _root, new Vector2(420f, 280f));
 		col.anchoredPosition = new Vector2(-520f, 120f);
 		UiKit.Label("SteamTitle", col, new Vector2(400f, 36f), "STEAM",
-			_skin!.font, _skin.cardFontSize, _skin.goldColor, TextAlignmentOptions.Left)
+			_font, CardFont, GoldCol, TextAlignmentOptions.Left)
 			.rectTransform.anchoredPosition = new Vector2(0f, 110f);
 
 		PlaceBtn(col, "HostSteam", "HOST LOBBY", new Vector2(0f, 40f), () =>
@@ -204,7 +266,7 @@ internal sealed class MpMenuUi : MonoBehaviour
 		var col = UiKit.Rect("LAN", _root, new Vector2(420f, 280f));
 		col.anchoredPosition = new Vector2(-60f, 120f);
 		UiKit.Label("LanTitle", col, new Vector2(400f, 36f), "LAN",
-			_skin!.font, _skin.cardFontSize, _skin.goldColor, TextAlignmentOptions.Left)
+			_font, CardFont, GoldCol, TextAlignmentOptions.Left)
 			.rectTransform.anchoredPosition = new Vector2(0f, 110f);
 
 		_lanHost = MakeInput(col, "LanHost", "127.0.0.1", new Vector2(-60f, 40f), 220f);
@@ -241,11 +303,11 @@ internal sealed class MpMenuUi : MonoBehaviour
 		var col = UiKit.Rect("Lobby", _root, new Vector2(420f, 280f));
 		col.anchoredPosition = new Vector2(400f, 120f);
 		UiKit.Label("LobbyTitle", col, new Vector2(400f, 36f), "LOBBY",
-			_skin!.font, _skin.cardFontSize, _skin.goldColor, TextAlignmentOptions.Left)
+			_font, CardFont, GoldCol, TextAlignmentOptions.Left)
 			.rectTransform.anchoredPosition = new Vector2(0f, 110f);
 
 		_peers = UiKit.Label("Peers", col, new Vector2(400f, 120f), "Not connected",
-			_skin.font, _skin.smallFontSize, _skin.textColor, TextAlignmentOptions.TopLeft);
+			_font, SmallFont, TextCol, TextAlignmentOptions.TopLeft);
 		_peers.rectTransform.anchoredPosition = new Vector2(0f, 20f);
 
 		_readyBtn = PlaceBtn(col, "Ready", "READY", new Vector2(0f, -90f), () =>
@@ -269,7 +331,7 @@ internal sealed class MpMenuUi : MonoBehaviour
 		var col = UiKit.Rect("Sandbox", _root, new Vector2(860f, 260f));
 		col.anchoredPosition = new Vector2(-290f, -200f);
 		UiKit.Label("SandTitle", col, new Vector2(400f, 36f), "SANDBOX",
-			_skin!.font, _skin.cardFontSize, _skin.goldColor, TextAlignmentOptions.Left)
+			_font, CardFont, GoldCol, TextAlignmentOptions.Left)
 			.rectTransform.anchoredPosition = new Vector2(-200f, 100f);
 
 		_freePlay = MakeToggle(col, "FreePlay", "Free play (no auto-finish)", new Vector2(-200f, 50f), RaceSync.FreePlay,
@@ -293,11 +355,11 @@ internal sealed class MpMenuUi : MonoBehaviour
 		var col = UiKit.Rect("Chat", _root, new Vector2(420f, 260f));
 		col.anchoredPosition = new Vector2(400f, -200f);
 		UiKit.Label("ChatTitle", col, new Vector2(400f, 36f), "CHAT",
-			_skin!.font, _skin.cardFontSize, _skin.goldColor, TextAlignmentOptions.Left)
+			_font, CardFont, GoldCol, TextAlignmentOptions.Left)
 			.rectTransform.anchoredPosition = new Vector2(0f, 100f);
 
 		_chat = UiKit.Label("ChatLog", col, new Vector2(400f, 140f), "",
-			_skin.font, _skin.smallFontSize, _skin.dimTextColor, TextAlignmentOptions.TopLeft);
+			_font, SmallFont, DimCol, TextAlignmentOptions.TopLeft);
 		_chat.rectTransform.anchoredPosition = new Vector2(0f, 10f);
 		_chat.textWrappingMode = TextWrappingModes.Normal;
 		_chat.overflowMode = TextOverflowModes.Ellipsis;
@@ -315,7 +377,7 @@ internal sealed class MpMenuUi : MonoBehaviour
 
 	private void RebuildMapList()
 	{
-		if (_mapContent == null || _skin == null) return;
+		if (_mapContent == null) return;
 		for (int i = _mapContent.childCount - 1; i >= 0; i--)
 			Destroy(_mapContent.GetChild(i).gameObject);
 
@@ -324,7 +386,7 @@ internal sealed class MpMenuUi : MonoBehaviour
 		if (cfg?.maps == null)
 		{
 			UiKit.Label("NoMaps", _mapContent, new Vector2(780f, 32f),
-				"(Open a run once to load maps)", _skin.font, _skin.smallFontSize, _skin.dimTextColor,
+				"(Open a run once to load maps)", _font, SmallFont, DimCol,
 				TextAlignmentOptions.Left).rectTransform.anchoredPosition = new Vector2(0f, -10f);
 			_mapContent.sizeDelta = new Vector2(780f, 40f);
 			return;
@@ -408,8 +470,8 @@ internal sealed class MpMenuUi : MonoBehaviour
 	private Button PlaceBtn(Transform parent, string name, string text, Vector2 pos, Action onClick,
 		float width = 400f, float height = 72f)
 	{
-		var btn = UiKit.Btn(name, parent, _skin!.menuButton, new Vector2(width, height), text,
-			_skin.font, Mathf.Min(_skin.buttonFontSize, 32f), _skin.textColor, _skin.menuButtonPressed, onClick);
+		var btn = UiKit.Btn(name, parent, MenuBtnSpr, new Vector2(width, height), text,
+			_font, BtnFont, TextCol, MenuBtnPressedSpr, onClick);
 		((RectTransform)btn.transform).anchoredPosition = pos;
 		return btn;
 	}
@@ -419,15 +481,15 @@ internal sealed class MpMenuUi : MonoBehaviour
 		var rect = UiKit.Rect(name, parent, new Vector2(width, 56f));
 		rect.anchoredPosition = pos;
 		var img = rect.gameObject.AddComponent<Image>();
-		img.sprite = _skin!.itemCell;
+		img.sprite = CellSpr;
 		img.type = Image.Type.Sliced;
 		img.color = new Color(0.12f, 0.12f, 0.14f, 0.92f);
 
 		var text = UiKit.Label("Text", rect, new Vector2(width - 16f, 48f), "",
-			_skin.font, _skin.smallFontSize, _skin.textColor, TextAlignmentOptions.Left);
+			_font, SmallFont, TextCol, TextAlignmentOptions.Left);
 		text.raycastTarget = false;
 		var ph = UiKit.Label("Placeholder", rect, new Vector2(width - 16f, 48f), placeholder,
-			_skin.font, _skin.smallFontSize, _skin.dimTextColor, TextAlignmentOptions.Left);
+			_font, SmallFont, DimCol, TextAlignmentOptions.Left);
 		ph.fontStyle = FontStyles.Italic;
 		ph.raycastTarget = false;
 
@@ -435,10 +497,10 @@ internal sealed class MpMenuUi : MonoBehaviour
 		field.textViewport = rect;
 		field.textComponent = text;
 		field.placeholder = ph;
-		field.fontAsset = _skin.font;
-		field.pointSize = _skin.smallFontSize;
-		field.caretColor = _skin.goldColor;
-		field.selectionColor = new Color(_skin.goldColor.r, _skin.goldColor.g, _skin.goldColor.b, 0.35f);
+		if (_font != null) field.fontAsset = _font;
+		field.pointSize = SmallFont;
+		field.caretColor = GoldCol;
+		field.selectionColor = new Color(GoldCol.r, GoldCol.g, GoldCol.b, 0.35f);
 		return field;
 	}
 
@@ -447,13 +509,15 @@ internal sealed class MpMenuUi : MonoBehaviour
 		var rect = UiKit.Rect(name, parent, new Vector2(420f, 36f));
 		rect.anchoredPosition = pos;
 		var toggle = rect.gameObject.AddComponent<Toggle>();
-		var bg = UiKit.Img("Box", rect, _skin!.itemCell, new Vector2(28f, 28f), sliced: true);
+		var bg = UiKit.Img("Box", rect, CellSpr, new Vector2(28f, 28f), sliced: true);
 		bg.rectTransform.anchoredPosition = new Vector2(-190f, 0f);
 		bg.raycastTarget = true;
-		var check = UiKit.Img("Check", bg.rectTransform, _skin.counterBadge, new Vector2(18f, 18f), sliced: true);
-		check.color = _skin.goldColor;
+		bg.enabled = true;
+		var check = UiKit.Img("Check", bg.rectTransform, BadgeSpr, new Vector2(18f, 18f), sliced: true);
+		check.color = GoldCol;
+		check.enabled = true;
 		UiKit.Label("Lbl", rect, new Vector2(360f, 36f), label,
-			_skin.font, _skin.smallFontSize, _skin.textColor, TextAlignmentOptions.Left)
+			_font, SmallFont, TextCol, TextAlignmentOptions.Left)
 			.rectTransform.anchoredPosition = new Vector2(30f, 0f);
 		toggle.targetGraphic = bg;
 		toggle.graphic = check;
