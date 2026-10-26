@@ -1,4 +1,4 @@
-﻿Drop-in install package for Half Grip Demo.
+﻿Drop these zips into the Half Grip Demo folder (next to HalfGrip.exe).
 
-Download HalfGripMultiplayer-0.9.0.zip → extract into the game folder (next to HalfGrip.exe).
-Requires BepInEx 5 already installed.
+- HalfGripMultiplayer-0.9.0-game-root.zip — BepInEx + plugin (full install)
+- HalfGripMultiplayer-0.9.0-plugin-only.zip — plugin DLL only
