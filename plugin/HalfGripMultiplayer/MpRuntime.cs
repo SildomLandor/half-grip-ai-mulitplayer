@@ -12,7 +12,7 @@ internal sealed class MpRuntime : MonoBehaviour
 	public static MpRuntime? Instance { get; private set; }
 
 	public readonly MpSession Session = new();
-	public bool UiVisible = true;
+	public bool UiVisible;
 	public string ChatDraft = "";
 	public string JoinLobbyIdText = "";
 	public string LanHostText = "127.0.0.1";
@@ -27,7 +27,10 @@ internal sealed class MpRuntime : MonoBehaviour
 	private GUIStyle? _box;
 	private GUIStyle? _label;
 	private GUIStyle? _title;
+	private GUIStyle? _hint;
 	private Vector2 _chatScroll;
+	private float _hintUntil;
+	private bool _unfocusGui;
 
 	internal IEnumerable<GhostCar> AllGhosts() => _ghosts.Values;
 
@@ -43,6 +46,8 @@ internal sealed class MpRuntime : MonoBehaviour
 	private void Awake()
 	{
 		Instance = this;
+		UiVisible = Plugin.Instance.UiStartVisible.Value;
+		_hintUntil = Time.unscaledTime + 8f;
 		SceneManager.sceneLoaded += OnUnitySceneLoaded;
 		TryAutoConnectFromEnv();
 	}
@@ -136,8 +141,12 @@ internal sealed class MpRuntime : MonoBehaviour
 		try { Session.Pump(); } catch { /* steam/lan */ }
 
 		var p = Plugin.Instance;
-		if (Input.GetKeyDown(p.ToggleUiKey.Value)) UiVisible = !UiVisible;
-		if (Input.GetKeyDown(p.HostKey.Value) && Session.Kind == TransportKind.Steam)
+		if (Input.GetKeyDown(p.ToggleUiKey.Value))
+			SetUiVisible(!UiVisible);
+		if (Input.GetKeyDown(KeyCode.Escape) && UiVisible)
+			SetUiVisible(false);
+		// F7 always tries Steam host (do not require Kind==Steam — offline default blocked hosting).
+		if (Input.GetKeyDown(p.HostKey.Value))
 			Session.HostSteam();
 		if (Input.GetKeyDown(p.LeaveKey.Value))
 		{
@@ -320,16 +329,43 @@ internal sealed class MpRuntime : MonoBehaviour
 		return tm != null ? tm.playerCarController : null;
 	}
 
+	private void SetUiVisible(bool visible)
+	{
+		UiVisible = visible;
+		if (!visible)
+			_unfocusGui = true;
+	}
+
 	private void OnGUI()
 	{
-		if (!UiVisible) return;
 		EnsureStyles();
+		if (_unfocusGui)
+		{
+			GUI.FocusControl(null);
+			_unfocusGui = false;
+		}
+		if (!UiVisible)
+		{
+			// No TextFields while hidden — keyboard / Steam overlay stay free.
+			if (Time.unscaledTime < _hintUntil)
+			{
+				var key = Plugin.Instance.ToggleUiKey.Value;
+				GUI.Label(new Rect(12f, 12f, 420f, 22f),
+					$"Half Grip MP — press {key} for menu (hidden so Steam works)", _hint);
+			}
+			return;
+		}
+
 		const float w = 400f;
-		var rect = new Rect(12f, 12f, w, 560f);
+		var rect = new Rect(12f, 12f, w, 520f);
 		GUI.Box(rect, GUIContent.none, _box);
 		GUILayout.BeginArea(new Rect(rect.x + 10, rect.y + 8, w - 20, rect.height - 16));
 
+		GUILayout.BeginHorizontal();
 		GUILayout.Label("HALF GRIP MULTIPLAYER", _title);
+		if (GUILayout.Button("Hide", GUILayout.Width(52), GUILayout.Height(22)))
+			SetUiVisible(false);
+		GUILayout.EndHorizontal();
 		GUILayout.Label($"v{PluginInfo.Version}  PvP  |  {Session.Status}", _label);
 		if (Session.Linked)
 		{
@@ -422,7 +458,7 @@ internal sealed class MpRuntime : MonoBehaviour
 
 		GUILayout.Space(4);
 		GUILayout.Label("Host opens new/continue run → guests join lobby. All Ready → host Start Race.", _label);
-		GUILayout.Label($"Hotkeys: {Plugin.Instance.ToggleUiKey.Value} UI · F7 Steam Host · F8 Leave", _label);
+		GUILayout.Label($"Hotkeys: {Plugin.Instance.ToggleUiKey.Value}/Esc hide · F7 Steam Host · F8 Leave", _label);
 		GUILayout.EndArea();
 	}
 
@@ -436,5 +472,10 @@ internal sealed class MpRuntime : MonoBehaviour
 		_box.normal.background = tex;
 		_label = new GUIStyle(GUI.skin.label) { fontSize = 12, wordWrap = true };
 		_title = new GUIStyle(GUI.skin.label) { fontSize = 14, fontStyle = FontStyle.Bold };
+		_hint = new GUIStyle(GUI.skin.label)
+		{
+			fontSize = 12,
+			normal = { textColor = new Color(0.85f, 0.9f, 1f, 0.75f) },
+		};
 	}
 }

@@ -13,6 +13,7 @@ public sealed class Plugin : BaseUnityPlugin
 	internal static ManualLogSource Log => Instance.Logger;
 
 	internal ConfigEntry<bool> Enabled = null!;
+	internal ConfigEntry<bool> UiStartVisible = null!;
 	internal ConfigEntry<KeyCode> ToggleUiKey = null!;
 	internal ConfigEntry<KeyCode> HostKey = null!;
 	internal ConfigEntry<KeyCode> LeaveKey = null!;
@@ -27,7 +28,9 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		Instance = this;
 		Enabled = Config.Bind("General", "Enabled", true, "Enable multiplayer systems");
-		ToggleUiKey = Config.Bind("Hotkeys", "ToggleUi", KeyCode.F6, "Show/hide overlay");
+		// Hidden by default so IMGUI TextFields do not eat keyboard / Steam overlay (Shift+Tab).
+		UiStartVisible = Config.Bind("General", "UiStartVisible", false, "Show multiplayer menu on launch (F6 toggles)");
+		ToggleUiKey = Config.Bind("Hotkeys", "ToggleUi", KeyCode.F6, "Show/hide multiplayer menu");
 		HostKey = Config.Bind("Hotkeys", "HostSteam", KeyCode.F7, "Host Steam friends lobby");
 		LeaveKey = Config.Bind("Hotkeys", "Leave", KeyCode.F8, "Leave session");
 		PoseHz = Config.Bind("Net", "PoseHz", 20f, new ConfigDescription("Pose sync Hz", new AcceptableValueRange<float>(5f, 60f)));
@@ -42,7 +45,7 @@ public sealed class Plugin : BaseUnityPlugin
 		DontDestroyOnLoad(go);
 		go.AddComponent<MpRuntime>();
 
-		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — protocol v9, blast/ram/rocket/pickup sync.");
+		Logger.LogInfo($"{PluginInfo.Name} {PluginInfo.Version} — menu hidden by default (F6).");
 	}
 
 	private void OnDestroy() => _harmony?.UnpatchSelf();
@@ -52,5 +55,5 @@ internal static class PluginInfo
 {
 	public const string GUID = "landor.halfgrip.multiplayer";
 	public const string Name = "Half Grip Multiplayer";
-	public const string Version = "0.9.0";
+	public const string Version = "0.9.1";
 }
