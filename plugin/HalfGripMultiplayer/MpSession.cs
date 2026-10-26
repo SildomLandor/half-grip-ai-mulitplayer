@@ -421,6 +421,17 @@ internal sealed class MpSession
 					RaceStartReceived = false;
 					LocalReady = false;
 					InLobbyPhase = true;
+					AddChat("* Race aborted");
+					if (!IsHost && !GameManager.raceOver)
+					{
+						try
+						{
+							GameManager.raceOver = true;
+							if (SceneLoader.Instance != null)
+								SceneLoader.Instance.LoadUIScene(1, 1f);
+						}
+						catch { /* scene */ }
+					}
 					break;
 				case MsgType.LoadScene:
 				{
@@ -622,6 +633,32 @@ internal sealed class MpSession
 					var seconds = r.ReadSingle();
 					if (!IsHost)
 						WorldSync.ApplyCutoffState(seconds);
+					break;
+				}
+				case MsgType.BlastFx:
+				{
+					var centre = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var radius = r.ReadSingle();
+					var dMax = r.ReadSingle();
+					var dMin = r.ReadSingle();
+					var source = r.ReadByte();
+					WorldSync.ApplyBlastFx(centre, radius, dMax, dMin, source);
+					break;
+				}
+				case MsgType.RocketFx:
+				{
+					var origin = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var landing = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					var speed = r.ReadSingle();
+					var arc = r.ReadSingle();
+					WorldSync.ApplyRocketFx(origin, landing, speed, arc);
+					break;
+				}
+				case MsgType.PickupFx:
+				{
+					var kind = r.ReadByte();
+					var pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+					WorldSync.ApplyPickupFx(kind, pos);
 					break;
 				}
 				default:

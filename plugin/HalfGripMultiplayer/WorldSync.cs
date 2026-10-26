@@ -21,6 +21,9 @@ internal static class WorldSync
 	private static bool _applyingRemoteTire;
 	private static bool _applyingRemoteShield;
 	private static bool _applyingRemoteCutoff;
+	private static bool _applyingRemoteBlast;
+	private static bool _applyingRemoteRocket;
+	private static bool _applyingRemotePickup;
 	private static string _lastLoadoutKey = "";
 	private static bool _localNitroOn;
 	private static float _lastCutoffBroadcast = -999f;
@@ -598,6 +601,143 @@ internal static class WorldSync
 
 	public static bool SuppressTireBroadcast => _applyingRemoteTire;
 	public static bool SuppressShieldBroadcast => _applyingRemoteShield;
+	public static bool SuppressBlastBroadcast => _applyingRemoteBlast;
+	public static bool SuppressRocketBroadcast => _applyingRemoteRocket;
+	public static bool SuppressPickupBroadcast => _applyingRemotePickup;
+
+	/// <summary>Damage peers whose ghost hitbox sits inside a blast sphere (ghosts are invincible to AreaBlast).</summary>
+	public static void DamagePeersInBlast(Vector3 centre, float radius, float damageMax, float damageMin)
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		if (radius <= 0.01f) return;
+		foreach (var ghost in rt.AllGhosts())
+		{
+			if (ghost?.Hitbox == null || ghost.Root == null) continue;
+			float dist = Vector3.Distance(ghost.Root.transform.position, centre);
+			if (dist > radius + 1.5f) continue;
+			float t = Mathf.Clamp01(dist / radius);
+			float dmg = Mathf.Lerp(damageMax, damageMin, t);
+			if (dmg > 0.5f)
+				rt.DealDamageToPeer(ghost.Hitbox.PeerId, dmg, centre);
+		}
+	}
+
+	public static void BroadcastBlast(MpSession session, Vector3 centre, float radius, float damageMax, float damageMin, byte source)
+	{
+		if (session == null || !session.Linked || SuppressBlastBroadcast) return;
+		session.Broadcast(NetProtocol.BlastFx(centre, radius, damageMax, damageMin, source), true);
+		DamagePeersInBlast(centre, radius, damageMax, damageMin);
+	}
+
+	public static void ApplyBlastFx(Vector3 centre, float radius, float damageMax, float damageMin, byte source)
+	{
+		if (_applyingRemoteBlast) return;
+		_applyingRemoteBlast = true;
+		try
+		{
+			// Visual/world: destroy nearest barrel in radius, then local-only AreaBlast (no rebroadcast).
+			ExplosiveBarrel? best = null;
+			float bestD = radius * radius + 4f;
+			foreach (var b in UnityEngine.Object.FindObjectsByType<ExplosiveBarrel>(FindObjectsSortMode.None))
+			{
+				if (b == null) continue;
+				float d = (b.transform.position - centre).sqrMagnitude;
+				if (d < bestD) { bestD = d; best = b; }
+			}
+			if (best != null)
+				UnityEngine.Object.Destroy(best.gameObject);
+
+			AreaBlast.Apply(centre, radius, damageMax, damageMin, (BlastSource)source);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"BlastFx: {ex.Message}");
+		}
+		finally
+		{
+			_applyingRemoteBlast = false;
+		}
+	}
+
+	public static void ApplyRocketFx(Vector3 origin, Vector3 landing, float speed, float arcHeight)
+	{
+		if (_applyingRemoteRocket) return;
+		_applyingRemoteRocket = true;
+		try
+		{
+			Rocket? prefab = null;
+			foreach (var launcher in UnityEngine.Object.FindObjectsByType<EnemyRocketLauncher>(FindObjectsSortMode.None))
+			{
+				if (launcher?.rocketPrefab != null) { prefab = launcher.rocketPrefab; break; }
+			}
+			if (prefab == null)
+			{
+				foreach (var r in Resources.FindObjectsOfTypeAll<Rocket>())
+				{
+					if (r != null) { prefab = r; break; }
+				}
+			}
+			if (prefab == null) return;
+			var rocket = UnityEngine.Object.Instantiate(prefab, origin, Quaternion.identity);
+			rocket.speed = speed;
+			rocket.arcHeight = arcHeight;
+			rocket.gameObject.AddComponent<RemoteRocketTag>();
+			rocket.Launch(landing, null, ~0);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"RocketFx: {ex.Message}");
+		}
+		finally
+		{
+			_applyingRemoteRocket = false;
+		}
+	}
+
+	public static void ApplyPickupFx(byte kind, Vector3 pos)
+	{
+		if (_applyingRemotePickup) return;
+		_applyingRemotePickup = true;
+		try
+		{
+			if (kind == 0)
+			{
+				ApplyAmmoFx(pos, 0);
+				return;
+			}
+			MonoBehaviour? best = null;
+			float bestD = 64f;
+			if (kind == 1)
+			{
+				foreach (var drop in UnityEngine.Object.FindObjectsByType<HealthDrop>(FindObjectsSortMode.None))
+				{
+					if (drop == null) continue;
+					float d = (drop.transform.position - pos).sqrMagnitude;
+					if (d < bestD) { bestD = d; best = drop; }
+				}
+			}
+			else
+			{
+				foreach (var drop in UnityEngine.Object.FindObjectsByType<EffectDrop>(FindObjectsSortMode.None))
+				{
+					if (drop == null) continue;
+					float d = (drop.transform.position - pos).sqrMagnitude;
+					if (d < bestD) { bestD = d; best = drop; }
+				}
+			}
+			if (best != null)
+				UnityEngine.Object.Destroy(best.gameObject);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"PickupFx: {ex.Message}");
+		}
+		finally
+		{
+			_applyingRemotePickup = false;
+		}
+	}
 
 	private static CarControllerNew? FindLocalPlayerCar()
 	{

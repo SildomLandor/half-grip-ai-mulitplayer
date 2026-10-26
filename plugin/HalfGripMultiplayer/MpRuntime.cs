@@ -22,7 +22,7 @@ internal sealed class MpRuntime : MonoBehaviour
 	private float _nextPose;
 	private float _nextBotPose;
 	private float _nextCarLook;
-	private float _lastDamageSent;
+	private readonly Dictionary<ulong, float> _lastDamageSent = new();
 	private string? _loadingHostScene;
 	private GUIStyle? _box;
 	private GUIStyle? _label;
@@ -275,8 +275,8 @@ internal sealed class MpRuntime : MonoBehaviour
 	public void DealDamageToPeer(ulong peerId, float amount, Vector3 point)
 	{
 		if (amount <= 0f) return;
-		if (Time.unscaledTime - _lastDamageSent < 0.03f) return;
-		_lastDamageSent = Time.unscaledTime;
+		if (_lastDamageSent.TryGetValue(peerId, out var last) && Time.unscaledTime - last < 0.03f) return;
+		_lastDamageSent[peerId] = Time.unscaledTime;
 		Session.SendTo(peerId, NetProtocol.Damage(amount, point), true);
 		Session.AddChat($"* Hit {peerId} for {amount:0}");
 	}

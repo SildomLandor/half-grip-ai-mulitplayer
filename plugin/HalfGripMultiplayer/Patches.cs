@@ -644,3 +644,182 @@ internal static class ShieldBlockSyncPatches
 		rt.Session.Broadcast(NetProtocol.ShieldFx(point), false);
 	}
 }
+
+/// <summary>Blasts: sync FX + deal networked damage to invincible ghost peers.</summary>
+[HarmonyPatch(typeof(AreaBlast), nameof(AreaBlast.Apply))]
+internal static class AreaBlastSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(Vector3 centre, float radius, float damageMax, float damageMin, BlastSource source, EnemyController spare)
+	{
+		_ = spare;
+		if (WorldSync.SuppressBlastBroadcast) return;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		WorldSync.BroadcastBlast(rt.Session, centre, radius, damageMax, damageMin, (byte)source);
+	}
+}
+
+/// <summary>Ram into a remote ghost hitbox → PvP damage.</summary>
+[HarmonyPatch(typeof(Ram), "OnCollisionEnter")]
+internal static class RamPeerDamagePatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(Ram __instance, Collision collision)
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		if (__instance == null || collision == null) return;
+		var box = collision.collider.GetComponentInParent<RemotePlayerHitbox>();
+		if (box == null) return;
+		float dmg = __instance.damage;
+		try { dmg = Stats.Get(Stat.RamDamage, dmg); } catch { /* keep */ }
+		rt.DealDamageToPeer(box.PeerId, dmg, collision.GetContact(0).point);
+	}
+}
+
+/// <summary>Host/AI rocket launch → guests spawn a VFX-only rocket.</summary>
+[HarmonyPatch(typeof(EnemyRocketLauncher), "LaunchShot")]
+internal static class RocketLaunchSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(EnemyRocketLauncher __instance, Vector3 origin, Vector3 direction, Transform aimTarget)
+	{
+		if (WorldSync.SuppressRocketBroadcast) return;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		if (__instance?.rocketPrefab == null) return;
+		Vector3 landing = origin + direction.normalized * 50f;
+		try
+		{
+			var m = AccessTools.Method(typeof(EnemyRocketLauncher), "LandingPoint");
+			if (m != null)
+				landing = (Vector3)m.Invoke(__instance, new object[] { origin, direction, aimTarget })!;
+		}
+		catch { /* fallback */ }
+		var prefab = __instance.rocketPrefab;
+		rt.Session.Broadcast(NetProtocol.RocketFx(origin, landing, prefab.speed, prefab.arcHeight), false);
+	}
+}
+
+/// <summary>Remote rockets: explode VFX only — AreaBlast already comes via BlastFx from the authority.</summary>
+[HarmonyPatch(typeof(Rocket), "Explode")]
+internal static class RemoteRocketExplodePatches
+{
+	[HarmonyPrefix]
+	private static bool Prefix(Rocket __instance, Vector3 at)
+	{
+		if (__instance == null || __instance.GetComponent<RemoteRocketTag>() == null) return true;
+		try
+		{
+			if (__instance.explosionEffect != null)
+				UnityEngine.Object.Instantiate(__instance.explosionEffect, at, Quaternion.identity);
+			SoundController.PlayRandomSoundAtPosition(
+				__instance.explosionSounds, at, __instance.explosionVolume,
+				__instance.explosionSoundMinDistance, __instance.explosionSoundMaxDistance,
+				__instance.explosionSoundPitchVariance);
+		}
+		catch { /* fx */ }
+		UnityEngine.Object.Destroy(__instance.gameObject);
+		return false;
+	}
+}
+
+/// <summary>Multiplayer: never freeze or slow the shared clock.</summary>
+[HarmonyPatch(typeof(TimeScale), nameof(TimeScale.Set))]
+internal static class TimeScaleSetMpPatches
+{
+	[HarmonyPrefix]
+	private static bool Prefix(float factor)
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return true;
+		return factor >= 0.999f;
+	}
+}
+
+[HarmonyPatch(typeof(TimeScale), nameof(TimeScale.Hold))]
+internal static class TimeScaleHoldMpPatches
+{
+	[HarmonyPrefix]
+	private static bool Prefix(bool held)
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return true;
+		return !held; // allow unhold; block pause freeze
+	}
+}
+
+/// <summary>Guests wait for host RaceEnd — local EndRace would desync payouts/UI.</summary>
+[HarmonyPatch(typeof(TrackManager), "EndRace")]
+internal static class GuestEndRaceGatePatches
+{
+	[HarmonyPrefix]
+	private static bool Prefix()
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return true;
+		if (rt.Session.IsHost) return true;
+		if (WorldSync.SuppressLocalRaceEndBroadcast) return true; // applying host RaceEnd path
+		Plugin.Log.LogInfo("Guest EndRace blocked — waiting for host RaceEnd");
+		rt.Session.AddChat("* Finished — waiting for host");
+		return false;
+	}
+}
+
+/// <summary>Quit → tell peers the race aborted / peer left.</summary>
+[HarmonyPatch(typeof(PauseController), nameof(PauseController.QuitRace))]
+internal static class QuitRaceAbortPatches
+{
+	[HarmonyPrefix]
+	private static void Prefix()
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		if (rt.Session.IsHost)
+			WorldSync.BroadcastRaceEnd(rt.Session, 99, false, false, false, true);
+		else
+			rt.Session.Broadcast(NetProtocol.RaceAbort(), true);
+	}
+}
+
+[HarmonyPatch(typeof(PauseController), nameof(PauseController.QuitRaceFree))]
+internal static class QuitRaceFreeAbortPatches
+{
+	[HarmonyPrefix]
+	private static void Prefix()
+	{
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		rt.Session.Broadcast(NetProtocol.RaceAbort(), true);
+	}
+}
+
+/// <summary>Health / effect pickup tombstones (heal/refill stay local).</summary>
+[HarmonyPatch(typeof(HealthDrop), "Collect")]
+internal static class HealthPickupSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(HealthDrop __instance, CarControllerNew car, bool __result)
+	{
+		if (!__result || __instance == null || car == null || !car.isPlayer) return;
+		if (WorldSync.SuppressPickupBroadcast) return;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		rt.Session.Broadcast(NetProtocol.PickupFx(1, __instance.transform.position), true);
+	}
+}
+
+[HarmonyPatch(typeof(EffectDrop), "Collect")]
+internal static class EffectPickupSyncPatches
+{
+	[HarmonyPostfix]
+	private static void Postfix(EffectDrop __instance, CarControllerNew car, bool __result)
+	{
+		if (!__result || __instance == null || car == null || !car.isPlayer) return;
+		if (WorldSync.SuppressPickupBroadcast) return;
+		var rt = MpRuntime.Instance;
+		if (rt == null || !rt.Session.Linked) return;
+		rt.Session.Broadcast(NetProtocol.PickupFx(2, __instance.transform.position), true);
+	}
+}

@@ -1,6 +1,6 @@
-# Half Grip Multiplayer Protocol
+﻿# Half Grip Multiplayer Protocol
 
-**Version:** 8 (plugin 0.8.0)
+**Version:** 9 (plugin 0.9.0)
 
 ## Transport
 
@@ -46,3 +46,6 @@
 | 29 | ShieldFx | BulletShield.Block |
 | 30 | CollideImpulse | peer RB push |
 | 31 | CutoffState | RaceCutoff seconds left |
+| 32 | BlastFx | barrels / AreaBlast |
+| 33 | RocketFx | AI rocket spawn |
+| 34 | PickupFx | health/effect tombstone |

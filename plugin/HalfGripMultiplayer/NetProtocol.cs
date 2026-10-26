@@ -39,11 +39,14 @@ internal enum MsgType : byte
 	ShieldFx = 29,
 	CollideImpulse = 30,
 	CutoffState = 31,
+	BlastFx = 32,
+	RocketFx = 33,
+	PickupFx = 34,
 }
 
 internal static class NetProtocol
 {
-	public const byte Version = 8;
+	public const byte Version = 9;
 	public const int DefaultLanPort = 27777;
 	public const int SteamChannel = 0;
 
@@ -395,6 +398,42 @@ internal static class NetProtocol
 		using var w = new BinaryWriter(ms);
 		w.Write((byte)MsgType.CutoffState);
 		w.Write(secondsLeft);
+		return ms.ToArray();
+	}
+
+	public static byte[] BlastFx(Vector3 centre, float radius, float damageMax, float damageMin, byte source)
+	{
+		using var ms = new MemoryStream(24);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.BlastFx);
+		w.Write(centre.x); w.Write(centre.y); w.Write(centre.z);
+		w.Write(radius);
+		w.Write(damageMax);
+		w.Write(damageMin);
+		w.Write(source);
+		return ms.ToArray();
+	}
+
+	public static byte[] RocketFx(Vector3 origin, Vector3 landing, float speed, float arcHeight)
+	{
+		using var ms = new MemoryStream(36);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.RocketFx);
+		w.Write(origin.x); w.Write(origin.y); w.Write(origin.z);
+		w.Write(landing.x); w.Write(landing.y); w.Write(landing.z);
+		w.Write(speed);
+		w.Write(arcHeight);
+		return ms.ToArray();
+	}
+
+	/// <summary>kind: 0=ammo(compat), 1=health, 2=effect</summary>
+	public static byte[] PickupFx(byte kind, Vector3 pos)
+	{
+		using var ms = new MemoryStream(16);
+		using var w = new BinaryWriter(ms);
+		w.Write((byte)MsgType.PickupFx);
+		w.Write(kind);
+		w.Write(pos.x); w.Write(pos.y); w.Write(pos.z);
 		return ms.ToArray();
 	}
 

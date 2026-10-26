@@ -226,3 +226,11 @@ Protocol v6. Synced: hazards seed, objective/boss/music/ceasefire in RaceSetup, 
 - LanTransport: seq/ack reliable channel (resend 120ms, TTL 8s).
 - Peer collision impulses via distance probe + CollideImpulse.
 - RaceCutoff.SecondsLeft host→guest; nitro off when activeBoost hits 0; GunFx plays shootSounds at origin.
+
+## 0.9.0 — blast/ram/rocket/pickup + timescale gate (2026-10-26)
+
+- Protocol v9: BlastFx, RocketFx, PickupFx.
+- AreaBlast → peer Damage + BlastFx; Ram hits RemotePlayerHitbox.
+- Enemy rockets synced (guest VFX-only rockets via RemoteRocketTag).
+- TimeScale.Set/Hold blocked in MP; guest EndRace gated; Quit → RaceAbort/RaceEnd.
+- Health/Effect pickup tombstones (heal/refill stay local).
