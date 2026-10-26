@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -184,6 +185,43 @@ internal static class SpawnEnemiesSeedPatches
 		var rt = MpRuntime.Instance;
 		if (rt == null || !rt.Session.Linked) return;
 		RaceSync.InitSpawnSeedIfNeeded();
+	}
+}
+
+/// <summary>
+/// LapManager only registers cars when leaderboard is empty. If a ghost registered first,
+/// the player never gets in → GetCarProjectedPoint throws → no laps for anyone.
+/// Always ensure the local player (and live bots) are on the board.
+/// </summary>
+[HarmonyPatch(typeof(LapManager), "Update")]
+internal static class LapManagerEnsureRegisteredPatches
+{
+	private static readonly FieldInfo? PlayerCarField =
+		AccessTools.Field(typeof(LapManager), "playerCar");
+	private static readonly FieldInfo? EnemiesField =
+		AccessTools.Field(typeof(LapManager), "enemies");
+
+	[HarmonyPrefix]
+	private static void Prefix(LapManager __instance)
+	{
+		if (__instance?.leaderboard == null) return;
+		var player = PlayerCarField?.GetValue(__instance) as GameObject;
+		if (player != null && !__instance.leaderboard.ContainsKey(player))
+		{
+			try { __instance.RegisterCar(player); }
+			catch (Exception ex) { Plugin.Log.LogWarning($"Lap register player: {ex.Message}"); }
+		}
+		if (EnemiesField?.GetValue(__instance) is System.Collections.IList list)
+		{
+			foreach (var item in list)
+			{
+				if (item is not EnemyController enemy || enemy == null || !enemy.alive) continue;
+				var go = enemy.gameObject;
+				if (__instance.leaderboard.ContainsKey(go)) continue;
+				try { __instance.RegisterCar(go); }
+				catch { /* */ }
+			}
+		}
 	}
 }
 

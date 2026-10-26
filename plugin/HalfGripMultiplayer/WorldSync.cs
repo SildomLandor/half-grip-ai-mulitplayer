@@ -329,14 +329,15 @@ internal static class WorldSync
 		}
 	}
 
+	/// <summary>
+	/// Do NOT call LapManager.RegisterCar here. LapManager only bulk-registers player+bots
+	/// when leaderboard.Count==0; an early RegisterCar (ghost claim) permanently skips
+	/// the player → KeyNotFound in GetCarProjectedPoint → laps stop for everyone.
+	/// Ghosts claim existing enemies that LapManager already registered.
+	/// </summary>
 	public static void TryRegisterGhostOnLeaderboard(GhostCar ghost)
 	{
-		if (ghost?.BoundEnemy == null) return;
-		var tm = UnityEngine.Object.FindFirstObjectByType<TrackManager>();
-		var lm = tm?.lapManager;
-		if (lm == null) return;
-		try { lm.RegisterCar(ghost.BoundEnemy.gameObject); }
-		catch { /* already registered */ }
+		_ = ghost;
 	}
 
 	public static void BroadcastLocalLap(MpSession session)
@@ -349,36 +350,17 @@ internal static class WorldSync
 		session.Broadcast(NetProtocol.LapState(e.currentLap, e.lapProgress, e.position, e.isFinished), false);
 	}
 
+	/// <summary>
+	/// Cache peer lap for UI only. Do not write into LapManager.leaderboard —
+	/// that fights GetCarProjectedPoint / LapCounter and can freeze race progress.
+	/// </summary>
 	public static void StorePeerLap(ulong peer, int lap, float progress, int place, bool finished)
 	{
 		PeerLaps[peer] = (lap, progress, place, finished);
-		var ghost = MpRuntime.Instance?.GetGhost(peer);
-		if (ghost?.BoundEnemy == null) return;
-		var tm = UnityEngine.Object.FindFirstObjectByType<TrackManager>();
-		var lm = tm != null ? tm.lapManager : null;
-		if (lm?.leaderboard == null) return;
-		var go = ghost.BoundEnemy.gameObject;
-		if (!lm.leaderboard.TryGetValue(go, out var e))
-		{
-			TryRegisterGhostOnLeaderboard(ghost);
-			if (!lm.leaderboard.TryGetValue(go, out e)) return;
-		}
-		e.currentLap = lap;
-		e.lapProgress = progress;
-		e.position = place;
-		e.isFinished = finished;
-		try
-		{
-			if (lm.trackLine != null && lm.trackLine.trackLength > 0.01f)
-			{
-				float frac = Mathf.Clamp01(progress / 100f);
-				e.totalDistance = (lap + frac) * lm.trackLine.trackLength;
-				e.trackProgress = e.totalDistance;
-			}
-		}
-		catch { /* track line */ }
-		lm.leaderboard[go] = e;
 	}
+
+	public static bool TryGetPeerLap(ulong peer, out (int lap, float progress, int place, bool finished) lap) =>
+		PeerLaps.TryGetValue(peer, out lap);
 
 	public static void SpawnGunTracer(Vector3 origin, Vector3 target)
 	{
